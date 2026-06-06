@@ -1,6 +1,6 @@
-# DR Platform UI
+# DR-platform
 
-기존 `k8s-compliance-platform`의 관제형 UI 스타일을 React로 옮긴 단일 재난 복구 대시보드입니다.
+클라우드-엣지 지능형 DR 플랫폼입니다. 기존 `k8s-compliance-platform`의 관제형 UI 스타일을 React로 옮긴 단일 재난 복구 대시보드를 제공합니다.
 
 화면은 다음 세 가지 운영 흐름에만 집중합니다.
 
