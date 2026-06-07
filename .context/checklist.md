@@ -160,18 +160,35 @@ TASK-05 verified values:
 
 ## TASK-06: Add Metric Collection and Graph Visualizations
 
-Status: Planned
+Status: Done
 
-- [ ] Define backend metric response contracts from `PROJECT.md`.
-- [ ] Add safe cluster metric collection APIs for registered clusters.
-- [ ] Add workload health and restore-readiness metric APIs.
-- [ ] Add dashboard graph visualizations for cluster status, backup freshness, and restore readiness.
-- [ ] Keep graph data API-backed instead of static frontend-only dummy data.
-- [ ] Preserve existing topology, cluster selector, backup history, and registry behavior.
-- [ ] Return structured metric errors without leaking secrets.
-- [ ] Verify frontend build succeeds.
-- [ ] Verify backend API starts successfully.
-- [ ] Document metric source limitations and future monitoring integration points.
+- [x] Define backend metric response contracts from `PROJECT.md`.
+- [x] Add safe cluster metric collection APIs for registered clusters.
+- [x] Add workload health and restore-readiness metric APIs.
+- [x] Add dashboard graph visualizations for cluster status, backup freshness, and restore readiness.
+- [x] Keep graph data API-backed instead of static frontend-only dummy data.
+- [x] Preserve existing topology, cluster selector, backup history, and registry behavior.
+- [x] Return structured metric errors without leaking secrets.
+- [x] Verify frontend build succeeds.
+- [x] Verify backend API starts successfully.
+- [x] Document metric source limitations and future monitoring integration points.
+
+TASK-06 verified values:
+- Added `GET /api/clusters/:clusterId/metrics`.
+- Added `GET /api/clusters/:clusterId/workloads`.
+- Added `GET /api/clusters/:clusterId/backup-freshness`.
+- Added `GET /api/clusters/:clusterId/restore-readiness`.
+- Added `GET /api/clusters/:clusterId/topology`.
+- Build verification: `npm run build`.
+- Syntax verification: `node --check server/server.mjs`, `node --check server/cluster-registry.mjs`, and `node --check src/api.js`.
+- API startup verification port: `http://127.0.0.1:3998`.
+- `GET /api/clusters`: returned registry-backed `cloud-primary` and `edge-recovery` with new metric capabilities.
+- `GET /api/clusters/cloud-primary/topology`: returned registry-backed Cloud and Edge topology nodes and backup-source edge.
+- `GET /api/clusters/edge-recovery/topology`: returned registry-backed Cloud and Edge topology nodes and restore-target edge.
+- `GET /api/clusters/cloud-primary/metrics`: returned `k8s-master` Ready, `9/9` running pods, and latest backup freshness.
+- `GET /api/clusters/cloud-primary/workloads`: returned `9` total pods, `9` running pods, `0` pending pods, and `0` failed pods.
+- `GET /api/clusters/cloud-primary/backup-freshness`: returned latest backup `task1-smoke-20260607012840`, phase `Completed`, freshness `Stale`.
+- Edge K3s live metric and restore-readiness verification requires `DR_SSH_PASSWORD`; without it the API returns sanitized `COMMAND_ERROR` details and does not expose secrets.
 
 ## Documentation Rules
 

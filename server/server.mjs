@@ -177,6 +177,163 @@ async function getClusterStatus(clusterId) {
   return normalizeNodeStatus(cluster, node);
 }
 
+async function getClusterMetrics({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertCapability(cluster, 'metrics');
+
+  const [node, workloads, backupFreshness, restoreReadiness] = await Promise.all([
+    getClusterStatus(cluster.id),
+    getWorkloadHealth({ params: { clusterId: cluster.id } }),
+    cluster.commands.backupFreshness
+      ? getBackupFreshness({ params: { clusterId: cluster.id } })
+      : Promise.resolve(null),
+    cluster.commands.restoreReadiness
+      ? getRestoreReadiness({ params: { clusterId: cluster.id } })
+      : Promise.resolve(null),
+  ]);
+
+  return {
+    clusterId: cluster.id,
+    displayName: cluster.displayName,
+    clusterKind: cluster.kind,
+    collectedAt: new Date().toISOString(),
+    node: {
+      ready: node.healthStatus === 'Ready',
+      nodeName: node.nodeName,
+      nodeIp: node.nodeIp,
+      kubernetesVersion: node.kubernetesVersion,
+      healthStatus: node.healthStatus,
+    },
+    workloads: workloads.summary,
+    backupFreshness: backupFreshness?.backupFreshness ?? null,
+    restoreReadiness: restoreReadiness?.restoreReadiness ?? null,
+  };
+}
+
+async function getWorkloadHealth({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertCapability(cluster, 'workloads');
+  const result = await runSshCommand(cluster, cluster.commands.workloads);
+  const podList = parseJsonCommand(result.stdout, `${cluster.id}:workloads`);
+  const workloads = normalizeWorkloads(cluster, podList);
+
+  return {
+    clusterId: cluster.id,
+    collectedAt: new Date().toISOString(),
+    ...workloads,
+  };
+}
+
+async function getBackupFreshness({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertCapability(cluster, 'backupFreshness');
+  assertCapability(cluster, 'backups');
+
+  const history = await getBackupHistory({ params: { clusterId: cluster.id } });
+  const latest = history.backups[0] || null;
+  const ageMinutes = latest?.createdTimestamp ? minutesSince(latest.createdTimestamp) : null;
+  const freshnessStatus = latest?.status === 'Completed' && ageMinutes !== null && ageMinutes <= 60
+    ? 'Fresh'
+    : latest
+      ? 'Stale'
+      : 'Unavailable';
+
+  return {
+    clusterId: cluster.id,
+    collectedAt: new Date().toISOString(),
+    backupFreshness: {
+      latestBackupName: latest?.backupName || null,
+      latestBackupPhase: latest?.status || null,
+      latestBackupTimestamp: latest?.createdTimestamp || null,
+      latestCompletionTimestamp: latest?.completionTimestamp || null,
+      ageMinutes,
+      freshnessStatus,
+      backupCount: history.backups.length,
+      completedBackups: history.backups.filter((backup) => backup.status === 'Completed').length,
+      warningBackups: history.backups.filter((backup) => (backup.warnings || 0) > 0).length,
+      failedBackups: history.backups.filter((backup) => backup.status && backup.status !== 'Completed').length,
+    },
+  };
+}
+
+async function getRestoreReadiness({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertCapability(cluster, 'restoreReadiness');
+
+  const [node, workloads] = await Promise.all([
+    getClusterStatus(cluster.id),
+    getWorkloadHealth({ params: { clusterId: cluster.id } }),
+  ]);
+  const minioStatus = cluster.commands.minioService ? await getMinioStatus() : null;
+  const nodeReady = node.healthStatus === 'Ready';
+  const workloadReady = workloads.summary.failedPods === 0;
+  const storageReachable = !minioStatus || Boolean(minioStatus.apiNodePort);
+  const readinessScore = Math.round(
+    ((nodeReady ? 45 : 0) + (workloadReady ? 35 : 0) + (storageReachable ? 20 : 0)),
+  );
+
+  return {
+    clusterId: cluster.id,
+    collectedAt: new Date().toISOString(),
+    restoreReadiness: {
+      status: readinessScore >= 80 ? 'Ready' : readinessScore >= 50 ? 'Degraded' : 'Blocked',
+      score: readinessScore,
+      nodeReady,
+      workloadReady,
+      storageReachable,
+      checks: [
+        {
+          name: 'node-ready',
+          passed: nodeReady,
+          message: `${node.nodeName} is ${node.healthStatus}`,
+        },
+        {
+          name: 'workloads-stable',
+          passed: workloadReady,
+          message: `${workloads.summary.failedPods} failed pods`,
+        },
+        {
+          name: 'backup-storage-reachable',
+          passed: storageReachable,
+          message: storageReachable ? 'Backup storage endpoint is reachable from registry data' : 'Backup storage endpoint is unavailable',
+        },
+      ],
+    },
+  };
+}
+
+async function getClusterTopology({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertCapability(cluster, 'topology');
+  const profiles = await listClusterProfiles();
+  const publicClusters = profiles.map(toPublicCluster);
+  const sourceClusters = publicClusters.filter((profile) => profile.kind === 'cloud-k8s');
+  const targetClusters = publicClusters.filter((profile) => profile.kind === 'edge-k3s');
+
+  return {
+    clusterId: cluster.id,
+    collectedAt: new Date().toISOString(),
+    nodes: publicClusters.map((profile) => ({
+      id: profile.id,
+      type: profile.kind,
+      label: profile.displayName,
+      nodeName: profile.nodeName,
+      nodeIp: profile.nodeIp,
+      selected: profile.id === cluster.id,
+      capabilities: Object.entries(profile.capabilities)
+        .filter(([, enabled]) => enabled)
+        .map(([name]) => name),
+    })),
+    edges: sourceClusters.flatMap((source) =>
+      targetClusters.map((target) => ({
+        source: source.id,
+        target: target.id,
+        relationship: source.id === cluster.id ? 'backup-source' : 'restore-target',
+      })),
+    ),
+  };
+}
+
 async function getVeleroLocation() {
   const cluster = await getCluster('cloud-primary');
   assertCapability(cluster, 'veleroLocation');
@@ -361,6 +518,58 @@ function normalizeNodeStatus(cluster, node) {
     healthStatus: readyCondition?.status === 'True' ? 'Ready' : 'NotReady',
     lastCheckedTimestamp: new Date().toISOString(),
   };
+}
+
+function normalizeWorkloads(cluster, podList) {
+  const pods = (podList.items || []).map((pod) => {
+    const containers = [
+      ...(pod.status?.containerStatuses || []),
+      ...(pod.status?.initContainerStatuses || []),
+    ];
+    const readyContainers = containers.filter((container) => container.ready).length;
+    const restartCount = containers.reduce((total, container) => total + (container.restartCount || 0), 0);
+
+    return {
+      namespace: pod.metadata?.namespace || 'default',
+      name: pod.metadata?.name || null,
+      phase: pod.status?.phase || 'Unknown',
+      readyContainers,
+      totalContainers: containers.length,
+      restartCount,
+      nodeName: pod.spec?.nodeName || null,
+    };
+  });
+  const namespaces = pods.reduce((accumulator, pod) => {
+    accumulator[pod.namespace] = (accumulator[pod.namespace] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  return {
+    summary: {
+      totalPods: pods.length,
+      runningPods: pods.filter((pod) => pod.phase === 'Running').length,
+      pendingPods: pods.filter((pod) => pod.phase === 'Pending').length,
+      failedPods: pods.filter((pod) => pod.phase === 'Failed').length,
+      succeededPods: pods.filter((pod) => pod.phase === 'Succeeded').length,
+      unknownPods: pods.filter((pod) => !['Running', 'Pending', 'Failed', 'Succeeded'].includes(pod.phase)).length,
+      restartCount: pods.reduce((total, pod) => total + pod.restartCount, 0),
+      namespaces: Object.entries(namespaces)
+        .map(([namespace, podCount]) => ({ namespace, podCount }))
+        .sort((left, right) => right.podCount - left.podCount),
+    },
+    pods: pods.slice(0, 50),
+    nodeName: cluster.nodeName,
+  };
+}
+
+function minutesSince(timestamp) {
+  const date = new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return Math.max(0, Math.round((Date.now() - date.getTime()) / 60000));
 }
 
 function findServicePort(ports, portNumber) {
@@ -690,6 +899,28 @@ function getRoute(method, pathname) {
           params: { clusterId, restoreName: itemName },
         };
       }
+    }
+
+    return null;
+  }
+
+  const metricsMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/(metrics|workloads|backup-freshness|restore-readiness|topology)$/);
+
+  if (metricsMatch) {
+    const [, clusterId, action] = metricsMatch;
+    const handlers = {
+      metrics: getClusterMetrics,
+      workloads: getWorkloadHealth,
+      'backup-freshness': getBackupFreshness,
+      'restore-readiness': getRestoreReadiness,
+      topology: getClusterTopology,
+    };
+
+    if (method === 'GET') {
+      return {
+        handler: handlers[action],
+        params: { clusterId },
+      };
     }
 
     return null;

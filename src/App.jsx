@@ -650,6 +650,165 @@ function validationErrors(apiResults) {
     });
 }
 
+function toNumber(value, fallback = 0) {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Math.round(toNumber(value))));
+}
+
+function ratioPercent(part, total) {
+  const denominator = toNumber(total);
+
+  if (denominator <= 0) {
+    return 0;
+  }
+
+  return clampPercent((toNumber(part) / denominator) * 100);
+}
+
+function metricTone(percent) {
+  if (percent >= 80) {
+    return "bg-emerald-500";
+  }
+
+  if (percent >= 50) {
+    return "bg-amber-400";
+  }
+
+  return "bg-red-500";
+}
+
+function formatMetricAge(minutes) {
+  if (minutes === null || minutes === undefined) {
+    return "No data";
+  }
+
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function buildMetricGroups(apiResults, apiLoading) {
+  const cloudMetrics = getApiResult(apiResults, "cloudMetrics");
+  const edgeMetrics = getApiResult(apiResults, "edgeMetrics");
+  const cloudWorkloads = getApiResult(apiResults, "cloudWorkloads") || cloudMetrics;
+  const edgeWorkloads = getApiResult(apiResults, "edgeWorkloads") || edgeMetrics;
+  const freshness = getApiResult(apiResults, "cloudBackupFreshness") || cloudMetrics;
+  const readiness = getApiResult(apiResults, "edgeRestoreReadiness") || edgeMetrics;
+  const cloudTotalPods = firstValue(cloudWorkloads, ["summary.totalPods", "workloads.totalPods"], 0);
+  const cloudRunningPods = firstValue(cloudWorkloads, ["summary.runningPods", "workloads.runningPods"], 0);
+  const edgeTotalPods = firstValue(edgeWorkloads, ["summary.totalPods", "workloads.totalPods"], 0);
+  const edgeRunningPods = firstValue(edgeWorkloads, ["summary.runningPods", "workloads.runningPods"], 0);
+  const latestAge = firstValue(freshness, ["backupFreshness.ageMinutes"], null);
+  const backupCount = firstValue(freshness, ["backupFreshness.backupCount"], 0);
+  const completedBackups = firstValue(freshness, ["backupFreshness.completedBackups"], 0);
+  const readinessScore = firstValue(readiness, ["restoreReadiness.score"], 0);
+
+  if (apiLoading) {
+    return [
+      {
+        title: "Cluster Health",
+        rows: [
+          { label: "Cloud K8s", value: "Loading", percent: 24, tone: "bg-sky-500" },
+          { label: "Edge K3s", value: "Loading", percent: 24, tone: "bg-sky-500" },
+        ],
+      },
+      {
+        title: "Workload Health",
+        rows: [
+          { label: "Cloud pods", value: "Loading", percent: 24, tone: "bg-sky-500" },
+          { label: "Edge pods", value: "Loading", percent: 24, tone: "bg-sky-500" },
+        ],
+      },
+      {
+        title: "Backup Freshness",
+        rows: [{ label: "Latest backup", value: "Loading", percent: 24, tone: "bg-sky-500" }],
+      },
+      {
+        title: "Restore Readiness",
+        rows: [{ label: "Edge target", value: "Loading", percent: 24, tone: "bg-sky-500" }],
+      },
+    ];
+  }
+
+  return [
+    {
+      title: "Cluster Health",
+      rows: [
+        {
+          label: "Cloud K8s",
+          value: firstValue(cloudMetrics, ["node.healthStatus"], getApiError(apiResults, "cloudMetrics") ? "Error" : "No data"),
+          percent: firstValue(cloudMetrics, ["node.ready"], false) ? 100 : 0,
+          tone: firstValue(cloudMetrics, ["node.ready"], false) ? "bg-emerald-500" : "bg-red-500",
+        },
+        {
+          label: "Edge K3s",
+          value: firstValue(edgeMetrics, ["node.healthStatus"], getApiError(apiResults, "edgeMetrics") ? "Error" : "No data"),
+          percent: firstValue(edgeMetrics, ["node.ready"], false) ? 100 : 0,
+          tone: firstValue(edgeMetrics, ["node.ready"], false) ? "bg-emerald-500" : "bg-red-500",
+        },
+      ],
+    },
+    {
+      title: "Workload Health",
+      rows: [
+        {
+          label: "Cloud pods",
+          value: `${cloudRunningPods}/${cloudTotalPods} running`,
+          percent: ratioPercent(cloudRunningPods, cloudTotalPods),
+          tone: metricTone(ratioPercent(cloudRunningPods, cloudTotalPods)),
+        },
+        {
+          label: "Edge pods",
+          value: `${edgeRunningPods}/${edgeTotalPods} running`,
+          percent: ratioPercent(edgeRunningPods, edgeTotalPods),
+          tone: metricTone(ratioPercent(edgeRunningPods, edgeTotalPods)),
+        },
+      ],
+    },
+    {
+      title: "Backup Freshness",
+      rows: [
+        {
+          label: "Latest backup age",
+          value: formatMetricAge(latestAge),
+          percent: latestAge === null ? 0 : clampPercent(100 - Math.max(0, latestAge - 15)),
+          tone: metricTone(latestAge === null ? 0 : 100 - Math.max(0, latestAge - 15)),
+        },
+        {
+          label: "Completed backups",
+          value: `${completedBackups}/${backupCount}`,
+          percent: ratioPercent(completedBackups, backupCount),
+          tone: metricTone(ratioPercent(completedBackups, backupCount)),
+        },
+      ],
+    },
+    {
+      title: "Restore Readiness",
+      rows: [
+        {
+          label: "Edge target",
+          value: firstValue(readiness, ["restoreReadiness.status"], getApiError(apiResults, "edgeRestoreReadiness") ? "Error" : "No data"),
+          percent: clampPercent(readinessScore),
+          tone: metricTone(readinessScore),
+        },
+        {
+          label: "Storage path",
+          value: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? "Reachable" : "Unavailable",
+          percent: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? 100 : 0,
+          tone: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? "bg-emerald-500" : "bg-red-500",
+        },
+      ],
+    },
+  ];
+}
+
 function deriveOverallStatus(apiResults, apiLoading) {
   if (apiLoading) {
     return "Syncing";
@@ -1007,6 +1166,39 @@ function MetricCard({ label, value, tone }) {
   );
 }
 
+function MetricGraphPanel({ group }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-black text-slate-950">{group.title}</h2>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600 ring-1 ring-slate-200">
+          API
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-4">
+        {group.rows.map((row) => (
+          <div key={`${group.title}-${row.label}`}>
+            <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+              <span className="font-bold text-slate-600">{row.label}</span>
+              <span className="font-black text-slate-900">{row.value}</span>
+            </div>
+            <div className="h-3 overflow-hidden rounded-full bg-slate-100 ring-1 ring-slate-200">
+              <div
+                className={`h-full rounded-full ${row.tone} transition-all duration-500`}
+                style={{ width: `${clampPercent(row.percent)}%` }}
+              />
+            </div>
+            <div className="mt-1 text-right text-[11px] font-bold text-slate-400">
+              {clampPercent(row.percent)}%
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ClusterList({ clusters, activeClusterId, onSelect }) {
   return (
     <aside className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -1077,6 +1269,7 @@ function App() {
   const nodeTypes = useMemo(() => ({ drNode: DisasterRecoveryNode }), []);
   const edgeTypes = useMemo(() => ({ labeled: LabeledFlowEdge }), []);
   const dashboardClusters = useMemo(() => buildDashboardClusters(apiResults, apiLoading), [apiResults, apiLoading]);
+  const metricGroups = useMemo(() => buildMetricGroups(apiResults, apiLoading), [apiResults, apiLoading]);
   const activeCluster = useMemo(
     () => dashboardClusters.find((cluster) => cluster.id === activeClusterId) ?? dashboardClusters[0],
     [activeClusterId, dashboardClusters],
@@ -1254,6 +1447,12 @@ function App() {
               </p>
             </div>
           </aside>
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-4">
+          {metricGroups.map((group) => (
+            <MetricGraphPanel key={group.title} group={group} />
+          ))}
         </section>
       </div>
     </main>

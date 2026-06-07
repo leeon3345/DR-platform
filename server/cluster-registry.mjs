@@ -128,6 +128,21 @@ export function toRuntimeCluster(profile) {
       restoreStatus: profile.capabilities.restoreStatus
         ? commandPrefix
         : null,
+      workloads: profile.capabilities.workloads
+        ? `${commandPrefix} get pods -A -o json`
+        : null,
+      metrics: profile.capabilities.metrics
+        ? commandPrefix
+        : null,
+      backupFreshness: profile.capabilities.backupFreshness
+        ? commandPrefix
+        : null,
+      restoreReadiness: profile.capabilities.restoreReadiness
+        ? commandPrefix
+        : null,
+      topology: profile.capabilities.topology
+        ? commandPrefix
+        : null,
       minioService: profile.capabilities.minio
         ? `${commandPrefix} get svc minio -n minio -o json`
         : null,
@@ -263,6 +278,11 @@ function normalizeCapabilities(kind, capabilities) {
         restorePreview: true,
         restoreExecute: false,
         restoreStatus: false,
+        workloads: true,
+        metrics: true,
+        backupFreshness: true,
+        restoreReadiness: false,
+        topology: true,
         minio: false,
       }
     : {
@@ -274,6 +294,11 @@ function normalizeCapabilities(kind, capabilities) {
         restorePreview: false,
         restoreExecute: true,
         restoreStatus: true,
+        workloads: true,
+        metrics: true,
+        backupFreshness: false,
+        restoreReadiness: true,
+        topology: true,
         minio: true,
       };
 
@@ -286,6 +311,11 @@ function normalizeCapabilities(kind, capabilities) {
     restorePreview: Boolean(capabilities.restorePreview ?? defaults.restorePreview),
     restoreExecute: Boolean(capabilities.restoreExecute ?? defaults.restoreExecute),
     restoreStatus: Boolean(capabilities.restoreStatus ?? defaults.restoreStatus),
+    workloads: Boolean(capabilities.workloads ?? defaults.workloads),
+    metrics: Boolean(capabilities.metrics ?? defaults.metrics),
+    backupFreshness: Boolean(capabilities.backupFreshness ?? defaults.backupFreshness),
+    restoreReadiness: Boolean(capabilities.restoreReadiness ?? defaults.restoreReadiness),
+    topology: Boolean(capabilities.topology ?? defaults.topology),
     minio: Boolean(capabilities.minio ?? defaults.minio),
   };
 }
