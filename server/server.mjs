@@ -1,4 +1,5 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
 import { URL } from 'node:url';
 import { minio } from './lab-config.mjs';
 import { ApiCommandError, parseJsonCommand, runSshCommand } from './command-runner.mjs';
@@ -20,6 +21,14 @@ const resourceNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 const ttlPattern = /^[0-9]+h[0-9]+m[0-9]+s$/;
 const labelKeyPattern = /^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$/;
 const labelValuePattern = /^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$/;
+const recoveryPolicyRegistryUrl = new URL('./registry/recovery-policy.json', import.meta.url);
+const recoveryPolicyRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
+const tierWeights = {
+  critical: 100,
+  high: 70,
+  normal: 40,
+  low: 10,
+};
 
 const routes = new Map([
   ['GET /api/clusters', listClusters],
@@ -481,6 +490,102 @@ async function getRestoreStatus({ params }) {
   };
 }
 
+async function getRecoveryPolicy({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertRecoveryRecommendationSupported(cluster);
+  const registry = await readRecoveryPolicyRegistry();
+  const clusterState = getRecoveryPolicyClusterState(registry, cluster.id);
+
+  return {
+    clusterId: cluster.id,
+    policies: clusterState.policies,
+    updatedAt: clusterState.updatedAt || null,
+  };
+}
+
+async function updateRecoveryPolicy({ request, params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertRecoveryRecommendationSupported(cluster);
+  const input = await readJsonBody(request);
+  assertNoSecretRequestFields(input);
+  const policies = normalizeRecoveryPolicies(input);
+  const registry = await readRecoveryPolicyRegistry();
+  const existingState = getRecoveryPolicyClusterState(registry, cluster.id);
+  const updatedAt = new Date().toISOString();
+
+  registry.clusters[cluster.id] = {
+    ...existingState,
+    policies,
+    updatedAt,
+  };
+
+  await writeRecoveryPolicyRegistry(registry);
+
+  return {
+    clusterId: cluster.id,
+    policies,
+    updatedAt,
+  };
+}
+
+async function getRecoveryRecommendations({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertRecoveryRecommendationSupported(cluster);
+  assertCapability(cluster, 'workloads');
+  assertCapability(cluster, 'backups');
+
+  const [registry, workloads, history] = await Promise.all([
+    readRecoveryPolicyRegistry(),
+    getWorkloadHealth({ params: { clusterId: cluster.id } }),
+    getBackupHistory({ params: { clusterId: cluster.id } }),
+  ]);
+  const clusterState = getRecoveryPolicyClusterState(registry, cluster.id);
+  const scored = scoreRecoveryRecommendations({
+    cluster,
+    policies: clusterState.policies,
+    approvals: clusterState.approvals,
+    workloads,
+    backups: history.backups,
+  });
+  const recommendations = await Promise.all(scored.map(async (recommendation) => ({
+      ...recommendation,
+      explanation: await generateRecommendationExplanation(recommendation),
+    })));
+
+  return {
+    clusterId: cluster.id,
+    generatedAt: new Date().toISOString(),
+    recommendations,
+  };
+}
+
+async function approveRecoveryRecommendation({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  assertRecoveryRecommendationSupported(cluster);
+  const namespace = normalizeResourceName(params.workloadId, 'workloadId');
+  const registry = await readRecoveryPolicyRegistry();
+  const existingState = getRecoveryPolicyClusterState(registry, cluster.id);
+  const updatedAt = new Date().toISOString();
+
+  registry.clusters[cluster.id] = {
+    ...existingState,
+    approvals: {
+      ...existingState.approvals,
+      [namespace]: true,
+    },
+    updatedAt,
+  };
+
+  await writeRecoveryPolicyRegistry(registry);
+
+  return {
+    clusterId: cluster.id,
+    workloadId: namespace,
+    approved: true,
+    approvedAt: updatedAt,
+  };
+}
+
 async function getMinioStatus() {
   const edgeCluster = await getCluster('edge-recovery');
   assertCapability(edgeCluster, 'minioService');
@@ -543,6 +648,36 @@ function normalizeWorkloads(cluster, podList) {
     accumulator[pod.namespace] = (accumulator[pod.namespace] || 0) + 1;
     return accumulator;
   }, {});
+  const namespaceHealth = Object.entries(
+    pods.reduce((accumulator, pod) => {
+      accumulator[pod.namespace] ??= {
+        namespace: pod.namespace,
+        totalPods: 0,
+        runningPods: 0,
+        pendingPods: 0,
+        failedPods: 0,
+        succeededPods: 0,
+        unknownPods: 0,
+      };
+
+      const health = accumulator[pod.namespace];
+      health.totalPods += 1;
+
+      if (pod.phase === 'Running') {
+        health.runningPods += 1;
+      } else if (pod.phase === 'Pending') {
+        health.pendingPods += 1;
+      } else if (pod.phase === 'Failed') {
+        health.failedPods += 1;
+      } else if (pod.phase === 'Succeeded') {
+        health.succeededPods += 1;
+      } else {
+        health.unknownPods += 1;
+      }
+
+      return accumulator;
+    }, {}),
+  ).map(([, health]) => health);
 
   return {
     summary: {
@@ -556,10 +691,364 @@ function normalizeWorkloads(cluster, podList) {
       namespaces: Object.entries(namespaces)
         .map(([namespace, podCount]) => ({ namespace, podCount }))
         .sort((left, right) => right.podCount - left.podCount),
+      namespaceHealth: namespaceHealth.sort((left, right) => right.totalPods - left.totalPods),
     },
     pods: pods.slice(0, 50),
     nodeName: cluster.nodeName,
   };
+}
+
+function assertRecoveryRecommendationSupported(cluster) {
+  if (cluster.kind !== 'cloud-k8s') {
+    throw new RegistryError('Recovery recommendations are only supported for cloud-k8s source clusters', {
+      code: 'CAPABILITY_NOT_SUPPORTED',
+      statusCode: 400,
+      details: {
+        clusterId: cluster.id,
+        clusterKind: cluster.kind,
+      },
+    });
+  }
+}
+
+async function readRecoveryPolicyRegistry() {
+  try {
+    const text = await fs.readFile(recoveryPolicyRegistryUrl, 'utf8');
+    const registry = JSON.parse(text);
+
+    return {
+      clusters: registry && typeof registry === 'object' && !Array.isArray(registry) ? registry.clusters || {} : {},
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { clusters: {} };
+    }
+
+    if (error instanceof SyntaxError) {
+      throw new RegistryError('Recovery policy registry contains invalid JSON', {
+        code: 'INVALID_RECOVERY_POLICY_REGISTRY',
+      });
+    }
+
+    throw error;
+  }
+}
+
+async function writeRecoveryPolicyRegistry(registry) {
+  await fs.mkdir(recoveryPolicyRegistryDirectoryUrl, { recursive: true });
+  await fs.writeFile(recoveryPolicyRegistryUrl, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+}
+
+function getRecoveryPolicyClusterState(registry, clusterId) {
+  registry.clusters ??= {};
+  const state = registry.clusters[clusterId] || {};
+
+  return {
+    policies: Array.isArray(state.policies) ? state.policies : [],
+    approvals: state.approvals && typeof state.approvals === 'object' && !Array.isArray(state.approvals)
+      ? state.approvals
+      : {},
+    updatedAt: state.updatedAt || null,
+  };
+}
+
+function normalizeRecoveryPolicies(input) {
+  const entries = Array.isArray(input) ? input : input?.policies;
+
+  if (!Array.isArray(entries)) {
+    throw new RegistryError('recovery policy request must include a policies array', {
+      code: 'INVALID_RECOVERY_POLICY',
+      details: { fieldName: 'policies' },
+    });
+  }
+
+  const seenNamespaces = new Set();
+
+  return entries.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new RegistryError('each recovery policy entry must be an object', {
+        code: 'INVALID_RECOVERY_POLICY',
+      });
+    }
+
+    const namespace = normalizeResourceName(entry.namespace, 'namespace');
+    const tier = normalizeRecoveryTier(entry.tier);
+
+    if (seenNamespaces.has(namespace)) {
+      throw new RegistryError('recovery policy namespaces must be unique per cluster', {
+        code: 'DUPLICATE_RECOVERY_POLICY',
+        details: { namespace },
+      });
+    }
+
+    seenNamespaces.add(namespace);
+
+    return {
+      namespace,
+      tier,
+      rto: normalizePolicyTarget(entry.rto, 'rto'),
+      rpo: normalizePolicyTarget(entry.rpo, 'rpo'),
+      labels: normalizeLabels(entry.labels),
+    };
+  });
+}
+
+function normalizeRecoveryTier(value) {
+  const tier = String(value || 'normal').trim().toLowerCase();
+
+  if (!Object.hasOwn(tierWeights, tier)) {
+    throw new RegistryError('tier must be one of critical, high, normal, or low', {
+      code: 'INVALID_RECOVERY_TIER',
+      details: { tier },
+    });
+  }
+
+  return tier;
+}
+
+function normalizePolicyTarget(value, fieldName) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  if (typeof value !== 'string' || value.trim().length > 32 || /password|secret|token|credential/i.test(value)) {
+    throw new RegistryError(`${fieldName} must be a short non-secret string`, {
+      code: 'INVALID_RECOVERY_POLICY_TARGET',
+      details: { fieldName },
+    });
+  }
+
+  return value.trim();
+}
+
+function scoreRecoveryRecommendations({ cluster, policies, approvals, workloads, backups }) {
+  const policyByNamespace = Object.fromEntries(policies.map((policy) => [policy.namespace, policy]));
+  const healthByNamespace = Object.fromEntries((workloads.summary.namespaceHealth || []).map((health) => [health.namespace, health]));
+  const namespaceNames = [...new Set([
+    ...Object.keys(policyByNamespace),
+    ...(workloads.summary.namespaces || []).map((item) => item.namespace),
+  ])].sort();
+
+  return namespaceNames
+    .map((namespace) => {
+      const policy = policyByNamespace[namespace] || {
+        namespace,
+        tier: 'normal',
+        rto: null,
+        rpo: null,
+        labels: {},
+      };
+      const health = healthByNamespace[namespace] || emptyNamespaceHealth(namespace);
+      const backup = findLatestCompletedBackupForNamespace(backups, namespace);
+      const backupAgeMinutes = backup?.completionTimestamp || backup?.createdTimestamp
+        ? minutesSince(backup.completionTimestamp || backup.createdTimestamp)
+        : null;
+      const tierWeight = tierWeights[policy.tier];
+      const backupFreshness = scoreBackupFreshness(backupAgeMinutes);
+      const workloadHealth = scoreWorkloadHealth(health);
+      const score = Math.round((tierWeight * 0.4) + (backupFreshness * 0.4) + (workloadHealth * 0.2));
+
+      return {
+        rank: 0,
+        workloadId: namespace,
+        namespace,
+        clusterId: cluster.id,
+        tier: policy.tier,
+        rto: policy.rto,
+        rpo: policy.rpo,
+        score,
+        scoreBreakdown: {
+          tierWeight,
+          backupFreshness,
+          workloadHealth,
+        },
+        backupAgeMinutes,
+        latestBackupName: backup?.backupName || null,
+        podSummary: summarizeNamespaceHealth(health),
+        approved: Boolean(approvals[namespace]),
+      };
+    })
+    .sort((left, right) =>
+      right.score - left.score
+      || right.scoreBreakdown.tierWeight - left.scoreBreakdown.tierWeight
+      || left.namespace.localeCompare(right.namespace),
+    )
+    .map((recommendation, index) => ({
+      ...recommendation,
+      rank: index + 1,
+    }));
+}
+
+function emptyNamespaceHealth(namespace) {
+  return {
+    namespace,
+    totalPods: 0,
+    runningPods: 0,
+    pendingPods: 0,
+    failedPods: 0,
+    succeededPods: 0,
+    unknownPods: 0,
+  };
+}
+
+function findLatestCompletedBackupForNamespace(backups, namespace) {
+  return backups.find((backup) => {
+    if (backup.status !== 'Completed') {
+      return false;
+    }
+
+    if (!Array.isArray(backup.includedNamespaces) || backup.includedNamespaces.length === 0) {
+      return true;
+    }
+
+    return backup.includedNamespaces.includes('*') || backup.includedNamespaces.includes(namespace);
+  }) || null;
+}
+
+function scoreBackupFreshness(ageMinutes) {
+  if (ageMinutes === null || ageMinutes === undefined) {
+    return 20;
+  }
+
+  if (ageMinutes <= 60) {
+    return 100;
+  }
+
+  if (ageMinutes <= 360) {
+    return 80;
+  }
+
+  if (ageMinutes <= 1440) {
+    return 50;
+  }
+
+  return 20;
+}
+
+function scoreWorkloadHealth(health) {
+  if (health.failedPods > 0) {
+    return 0;
+  }
+
+  if (health.pendingPods > 0) {
+    return 50;
+  }
+
+  if (health.totalPods > 0 && health.runningPods === health.totalPods) {
+    return 100;
+  }
+
+  return 50;
+}
+
+function summarizeNamespaceHealth(health) {
+  if (health.totalPods === 0) {
+    return 'No pods observed for this namespace';
+  }
+
+  const parts = [
+    `${health.runningPods}/${health.totalPods} Running`,
+  ];
+
+  if (health.pendingPods > 0) {
+    parts.push(`${health.pendingPods} Pending`);
+  }
+
+  if (health.failedPods > 0) {
+    parts.push(`${health.failedPods} Failed`);
+  }
+
+  if (health.unknownPods > 0) {
+    parts.push(`${health.unknownPods} Unknown`);
+  }
+
+  return parts.join(', ');
+}
+
+async function generateRecommendationExplanation(recommendation) {
+  const fallback = buildFallbackRecommendationExplanation(recommendation);
+  const apiKey = process.env.LLM_API_KEY?.trim();
+
+  if (!apiKey) {
+    return fallback;
+  }
+
+  try {
+    const response = await fetch(process.env.LLM_API_URL || 'https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: process.env.LLM_MODEL || 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You write concise disaster recovery advice for Kubernetes operators.',
+          },
+          {
+            role: 'user',
+            content: buildRecommendationPrompt(recommendation),
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 180,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    const payload = await response.json();
+    const text = payload?.choices?.[0]?.message?.content;
+
+    return sanitizeExplanation(text) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildRecommendationPrompt(recommendation) {
+  return [
+    'You are a disaster recovery advisor for a Kubernetes platform.',
+    'Given the following workload recovery score, write a 2-3 sentence explanation',
+    'for an operator that justifies the ranking and highlights any risks.',
+    '',
+    `Workload: ${recommendation.namespace}`,
+    `Tier: ${recommendation.tier}`,
+    `Score: ${recommendation.score} / 100`,
+    `Tier weight: ${recommendation.scoreBreakdown.tierWeight}`,
+    `Backup age: ${recommendation.backupAgeMinutes ?? 'missing'} minutes (freshness score: ${recommendation.scoreBreakdown.backupFreshness})`,
+    `Pod health: ${recommendation.podSummary} (health score: ${recommendation.scoreBreakdown.workloadHealth})`,
+    `RTO target: ${recommendation.rto || 'not set'}`,
+    `RPO target: ${recommendation.rpo || 'not set'}`,
+    '',
+    'Respond in plain text only. Do not use markdown or bullet points.',
+  ].join('\n');
+}
+
+function buildFallbackRecommendationExplanation(recommendation) {
+  const backupAge = recommendation.backupAgeMinutes === null || recommendation.backupAgeMinutes === undefined
+    ? 'no completed backup was found'
+    : `the latest completed backup is ${recommendation.backupAgeMinutes} minutes old`;
+  const approval = recommendation.approved ? 'The operator has already approved this recommendation.' : 'Operator approval is still required before restore execution.';
+
+  return `${recommendation.namespace} is ranked ${recommendation.rank} with a score of ${recommendation.score} because its tier is ${recommendation.tier}, ${backupAge}, and pod health is ${recommendation.podSummary}. ${approval}`;
+}
+
+function sanitizeExplanation(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(/[`*_>#-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 900);
 }
 
 function minutesSince(timestamp) {
@@ -848,6 +1337,50 @@ function getRoute(method, pathname) {
       handler: exact,
       params: {},
     };
+  }
+
+  const policyMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/recovery-policy$/);
+
+  if (policyMatch) {
+    const [, clusterId] = policyMatch;
+
+    if (method === 'GET') {
+      return {
+        handler: getRecoveryPolicy,
+        params: { clusterId },
+      };
+    }
+
+    if (method === 'POST') {
+      return {
+        handler: updateRecoveryPolicy,
+        params: { clusterId },
+      };
+    }
+
+    return null;
+  }
+
+  const recommendationMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/recommendations(?:\/([^/]+)\/approve)?$/);
+
+  if (recommendationMatch) {
+    const [, clusterId, workloadId] = recommendationMatch;
+
+    if (!workloadId && method === 'GET') {
+      return {
+        handler: getRecoveryRecommendations,
+        params: { clusterId },
+      };
+    }
+
+    if (workloadId && method === 'POST') {
+      return {
+        handler: approveRecoveryRecommendation,
+        params: { clusterId, workloadId },
+      };
+    }
+
+    return null;
   }
 
   const collectionMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/(backups|restores)(?:\/([^/]+))?$/);

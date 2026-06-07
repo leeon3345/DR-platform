@@ -11,6 +11,7 @@ const API_PATHS = {
   edgeWorkloads: "/api/clusters/edge-recovery/workloads",
   cloudBackupFreshness: "/api/clusters/cloud-primary/backup-freshness",
   edgeRestoreReadiness: "/api/clusters/edge-recovery/restore-readiness",
+  cloudRecommendations: "/api/clusters/cloud-primary/recommendations",
   cloudTopology: "/api/clusters/cloud-primary/topology",
   edgeTopology: "/api/clusters/edge-recovery/topology",
   cloudValidation: "/api/clusters/cloud-primary/validate",
@@ -70,7 +71,7 @@ async function getJson(path, { signal } = {}) {
   throw new Error(lastError?.message ?? "API request failed");
 }
 
-async function postJson(path, { signal } = {}) {
+async function postJson(path, { body, signal } = {}) {
   let lastError = null;
 
   for (const baseUrl of getApiBaseUrls()) {
@@ -81,6 +82,7 @@ async function postJson(path, { signal } = {}) {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
+        body: body === undefined ? undefined : JSON.stringify(body),
         signal,
       });
       const text = await response.text();
@@ -123,4 +125,8 @@ export async function loadDashboardData({ signal } = {}) {
   );
 
   return Object.fromEntries(entries);
+}
+
+export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {
+  return postJson(`/api/clusters/cloud-primary/recommendations/${encodeURIComponent(workloadId)}/approve`, { signal });
 }

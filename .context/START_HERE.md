@@ -7,7 +7,7 @@ Use this file as the short boot note for a new AI chat.
 Default new-chat prompt:
 
 ```text
-Read .context/START_HERE.md and .context/task6.md only.
+Read .context/START_HERE.md and .context/task7.md only.
 Do not open other files unless I ask.
 
 If you need more context, ask first and name the exact file.
@@ -42,18 +42,21 @@ Main product direction:
 - TASK-03: Dashboard connected to backend status APIs.
 - TASK-04: Real non-secret cluster registry added.
 - TASK-05: Backup creation, restore preview, restore execution, and status APIs added.
+- TASK-06: Metric collection APIs and dashboard graph visualizations added.
+- TASK-07: Policy-based recovery priority recommendations, server-side LLM/fallback explanations, and dashboard approval panel added.
 
 ## Current Next Task
 
 ```text
-.context/task6.md
+.context/task8.md
 ```
 
-TASK-06 focus:
-- Add backend metric collection APIs for registered clusters.
-- Add workload health and restore-readiness metrics.
-- Add graph visualizations for cluster status, backup freshness, and restore readiness.
-- Keep dashboard data API-backed and avoid browser-side shell command execution.
+TASK-08 should be drafted before the next implementation task.
+Likely next focus:
+- Connect approved recommendations to the existing TASK-05 restore preview/execution flow.
+- Add restore progress tracking per approved workload.
+- Keep all credential handling and CLI/SSH execution backend-only.
+- Preserve TASK-07 deterministic scoring and server-only LLM explanation behavior.
 
 ## Important Files
 
@@ -73,6 +76,7 @@ server/command-runner.mjs
 server/lab-config.mjs
 server/cluster-registry.mjs
 server/registry/clusters.json
+server/registry/recovery-policy.json (local, Git-ignored)
 ```
 
 Project/task docs:
@@ -80,7 +84,7 @@ Project/task docs:
 ```text
 .context/PROJECT.md
 .context/checklist.md
-.context/task6.md
+.context/task7.md
 ```
 
 ## Lab Cluster Registry
@@ -147,6 +151,18 @@ POST /api/clusters/cloud-primary/validate
 POST /api/clusters/edge-recovery/validate
 GET /api/clusters/cloud-primary/status
 GET /api/clusters/edge-recovery/status
+GET /api/clusters/cloud-primary/metrics
+GET /api/clusters/edge-recovery/metrics
+GET /api/clusters/cloud-primary/workloads
+GET /api/clusters/edge-recovery/workloads
+GET /api/clusters/cloud-primary/backup-freshness
+GET /api/clusters/edge-recovery/restore-readiness
+GET /api/clusters/cloud-primary/topology
+GET /api/clusters/edge-recovery/topology
+GET /api/clusters/cloud-primary/recovery-policy
+POST /api/clusters/cloud-primary/recovery-policy
+GET /api/clusters/cloud-primary/recommendations
+POST /api/clusters/cloud-primary/recommendations/:workloadId/approve
 GET /api/clusters/cloud-primary/backups
 GET /api/clusters/cloud-primary/backups/:backupName
 POST /api/clusters/cloud-primary/backups
@@ -162,6 +178,8 @@ GET /api/storage/minio/status
 - Do not store plaintext SSH passwords, Kubernetes secrets, MinIO credentials, or Velero credentials in Git-tracked files.
 - Do not accept secret values in browser code or API request bodies.
 - Do not move CLI command execution into the browser.
+- Do not expose LLM API keys in browser code or API responses.
+- Do not let LLM output change TASK-07 recommendation scores or rank.
 - Backend API errors should be structured and sanitized.
 - Prefer registry-backed cluster metadata instead of hardcoded cluster assumptions.
 - Ask before reading extra files when the prompt limits file access.

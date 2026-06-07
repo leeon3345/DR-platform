@@ -12,7 +12,7 @@ import {
   getSmoothStepPath,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { loadDashboardData } from "./api";
+import { approveRecoveryRecommendation, loadDashboardData } from "./api";
 
 const statusStyles = {
   error: {
@@ -809,6 +809,10 @@ function buildMetricGroups(apiResults, apiLoading) {
   ];
 }
 
+function getRecoveryRecommendations(apiResults) {
+  return asArray(getApiResult(apiResults, "cloudRecommendations"), ["recommendations"]);
+}
+
 function deriveOverallStatus(apiResults, apiLoading) {
   if (apiLoading) {
     return "Syncing";
@@ -1199,6 +1203,123 @@ function MetricGraphPanel({ group }) {
   );
 }
 
+function RecoveryRecommendationPanel({ recommendations, loading, error, approvalError, pendingWorkloadId, onApprove }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-sm font-black text-slate-950">Recovery Priority Recommendations</h2>
+          <p className="text-xs font-medium text-slate-500">정책, 백업 신선도, 워크로드 health 기반 승인 대기 목록</p>
+        </div>
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700 ring-1 ring-sky-200">
+          <Icon name="brain" className="h-4 w-4" />
+          AI explained
+        </span>
+      </div>
+
+      {loading && (
+        <div className="mt-5 rounded-md border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+          복구 우선순위 추천을 불러오는 중입니다.
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+          추천 API를 사용할 수 없습니다. 서버 로그나 클러스터 capability를 확인하세요.
+        </div>
+      )}
+
+      {!loading && approvalError && (
+        <div className="mt-5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+          승인 상태를 저장하지 못했습니다. 잠시 후 다시 시도하세요.
+        </div>
+      )}
+
+      {!loading && !error && recommendations.length === 0 && (
+        <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+          추천할 워크로드가 아직 없습니다. 정책 또는 워크로드 metric이 수집되면 목록이 표시됩니다.
+        </div>
+      )}
+
+      {!loading && !error && recommendations.length > 0 && (
+        <div className="mt-5 grid gap-3">
+          {recommendations.map((recommendation) => {
+            const pending = pendingWorkloadId === recommendation.workloadId;
+
+            return (
+              <article
+                key={recommendation.workloadId}
+                className="rounded-lg border border-slate-200 bg-slate-50 p-4"
+              >
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="grid h-8 w-8 place-items-center rounded-md bg-slate-950 text-sm font-black text-white">
+                        {recommendation.rank}
+                      </span>
+                      <h3 className="text-base font-black text-slate-950">{recommendation.namespace}</h3>
+                      <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold uppercase text-slate-600 ring-1 ring-slate-200">
+                        {recommendation.tier}
+                      </span>
+                      {recommendation.approved && (
+                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200">
+                          Approved
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-3 max-w-4xl text-sm font-medium leading-6 text-slate-700">
+                      {recommendation.explanation}
+                    </p>
+                  </div>
+
+                  <div className="grid shrink-0 grid-cols-[92px_110px] gap-2 md:grid-cols-1">
+                    <div className="rounded-md bg-white px-3 py-2 text-center ring-1 ring-slate-200">
+                      <div className="text-[11px] font-bold text-slate-400">Score</div>
+                      <div className="text-2xl font-black text-slate-950">{recommendation.score}</div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={recommendation.approved || pending}
+                      onClick={() => onApprove(recommendation.workloadId)}
+                      className={`rounded-md px-3 py-2 text-sm font-black transition ${
+                        recommendation.approved
+                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-wait disabled:bg-slate-400"
+                      }`}
+                    >
+                      {recommendation.approved ? "Confirmed" : pending ? "Saving" : "Approve"}
+                    </button>
+                  </div>
+                </div>
+
+                <dl className="mt-4 grid gap-2 text-xs sm:grid-cols-3">
+                  <div className="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200">
+                    <dt className="font-bold text-slate-400">Tier weight</dt>
+                    <dd className="mt-1 font-black text-slate-900">{recommendation.scoreBreakdown?.tierWeight ?? "N/A"}</dd>
+                  </div>
+                  <div className="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200">
+                    <dt className="font-bold text-slate-400">Backup freshness</dt>
+                    <dd className="mt-1 font-black text-slate-900">
+                      {recommendation.scoreBreakdown?.backupFreshness ?? "N/A"}
+                      <span className="ml-2 font-semibold text-slate-500">
+                        {formatMetricAge(recommendation.backupAgeMinutes)}
+                      </span>
+                    </dd>
+                  </div>
+                  <div className="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200">
+                    <dt className="font-bold text-slate-400">Workload health</dt>
+                    <dd className="mt-1 font-black text-slate-900">{recommendation.scoreBreakdown?.workloadHealth ?? "N/A"}</dd>
+                  </div>
+                </dl>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ClusterList({ clusters, activeClusterId, onSelect }) {
   return (
     <aside className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -1266,10 +1387,14 @@ function App() {
   const [activeClusterId, setActiveClusterId] = useState(clusterScenarios[0].id);
   const [apiResults, setApiResults] = useState(null);
   const [apiLoading, setApiLoading] = useState(true);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [pendingWorkloadId, setPendingWorkloadId] = useState(null);
+  const [approvalError, setApprovalError] = useState(null);
   const nodeTypes = useMemo(() => ({ drNode: DisasterRecoveryNode }), []);
   const edgeTypes = useMemo(() => ({ labeled: LabeledFlowEdge }), []);
   const dashboardClusters = useMemo(() => buildDashboardClusters(apiResults, apiLoading), [apiResults, apiLoading]);
   const metricGroups = useMemo(() => buildMetricGroups(apiResults, apiLoading), [apiResults, apiLoading]);
+  const recommendations = useMemo(() => getRecoveryRecommendations(apiResults), [apiResults]);
   const activeCluster = useMemo(
     () => dashboardClusters.find((cluster) => cluster.id === activeClusterId) ?? dashboardClusters[0],
     [activeClusterId, dashboardClusters],
@@ -1288,6 +1413,7 @@ function App() {
   const apiErrors = endpointErrors(apiResults);
   const validateErrors = validationErrors(apiResults);
   const apiIssueCount = apiErrors.length + validateErrors.length;
+  const recommendationError = getApiError(apiResults, "cloudRecommendations");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1314,7 +1440,21 @@ function App() {
       });
 
     return () => controller.abort();
-  }, []);
+  }, [reloadNonce]);
+
+  async function handleApproveRecommendation(workloadId) {
+    setPendingWorkloadId(workloadId);
+    setApprovalError(null);
+
+    try {
+      await approveRecoveryRecommendation(workloadId);
+      setReloadNonce((value) => value + 1);
+    } catch (error) {
+      setApprovalError(error.message);
+    } finally {
+      setPendingWorkloadId(null);
+    }
+  }
 
   useEffect(() => {
     if (!dashboardClusters.some((cluster) => cluster.id === activeClusterId)) {
@@ -1454,6 +1594,15 @@ function App() {
             <MetricGraphPanel key={group.title} group={group} />
           ))}
         </section>
+
+        <RecoveryRecommendationPanel
+          recommendations={recommendations}
+          loading={apiLoading}
+          error={recommendationError}
+          approvalError={approvalError}
+          pendingWorkloadId={pendingWorkloadId}
+          onApprove={handleApproveRecommendation}
+        />
       </div>
     </main>
   );

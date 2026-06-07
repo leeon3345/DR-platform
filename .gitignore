@@ -9,6 +9,7 @@ dist
 # Codex local context
 .codexignore
 .context/handoff.md
+server/registry/recovery-policy.json
 
 # Python / CLI backend
 # Byte-compiled / optimized / DLL files
