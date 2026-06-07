@@ -190,6 +190,45 @@ TASK-06 verified values:
 - `GET /api/clusters/cloud-primary/backup-freshness`: returned latest backup `task1-smoke-20260607012840`, phase `Completed`, freshness `Stale`.
 - Edge K3s live metric and restore-readiness verification requires `DR_SSH_PASSWORD`; without it the API returns sanitized `COMMAND_ERROR` details and does not expose secrets.
 
+## TASK-07: Add Policy-Based Recovery Prioritization with AI Explanation
+
+Status: Done
+
+- [x] Add a recovery policy registry for operator-defined workload tiers.
+- [x] Exclude `server/registry/recovery-policy.json` from Git tracking.
+- [x] Add policy management API for reading and writing workload tiers.
+- [x] Add deterministic scoring from tier weight, backup freshness, and workload health.
+- [x] Add recommendation API returning rank, score, score breakdown, explanation, and approval state.
+- [x] Keep LLM explanation generation server-side only.
+- [x] Keep LLM unavailable or failed states from changing score or rank.
+- [x] Return fallback template explanations when `LLM_API_KEY` is missing or invalid.
+- [x] Add recommendation approval API that sets `approved: true` without triggering restore execution.
+- [x] Add dashboard recommendation panel with scores, explanations, and approve buttons.
+- [x] Preserve existing backup, restore, registry, status, and metric API behavior.
+- [x] Keep browser-side code free of shell execution and LLM API keys.
+- [x] Verify backend syntax succeeds.
+- [x] Verify frontend build succeeds.
+- [x] Verify backend API starts successfully with and without `LLM_API_KEY`.
+
+TASK-07 verified values:
+- Added `GET /api/clusters/:clusterId/recovery-policy`.
+- Added `POST /api/clusters/:clusterId/recovery-policy`.
+- Added `GET /api/clusters/:clusterId/recommendations`.
+- Added `POST /api/clusters/:clusterId/recommendations/:workloadId/approve`.
+- Policy registry file: `server/registry/recovery-policy.json`, confirmed Git-ignored.
+- Syntax verification: `node --check server/server.mjs`.
+- Build verification: `npm run build`.
+- API startup verification without `LLM_API_KEY`: `http://127.0.0.1:3998`.
+- API startup verification with `LLM_API_KEY=test-key`: `http://127.0.0.1:3999`.
+- `GET /api/clusters/cloud-primary/recovery-policy`: returned local policy entries.
+- `POST /api/clusters/cloud-primary/recovery-policy`: saved `default` as `critical` with `rto` `1h` and `rpo` `30m`.
+- `GET /api/clusters/cloud-primary/recommendations`: returned ranked workloads with deterministic scores and fallback explanations.
+- Top recommendation during verification: `default`, score `70`, tier weight `100`, backup freshness `50`, workload health `50`.
+- Latest completed backup used during verification: `task1-smoke-20260607012840`.
+- `POST /api/clusters/cloud-primary/recommendations/default/approve`: returned `approved: true`.
+- Re-reading recommendations after approval returned `default` with `approved: true`.
+- `GET /api/clusters/edge-recovery/recommendations`: returned `CAPABILITY_NOT_SUPPORTED`.
+
 ## Documentation Rules
 
 - Keep task files focused on scope, constraints, and completion criteria.
