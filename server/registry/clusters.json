@@ -1,0 +1,61 @@
+[
+  {
+    "id": "cloud-primary",
+    "displayName": "Cloud K8s Primary",
+    "kind": "cloud-k8s",
+    "provider": "VirtualBox Lab",
+    "environment": "Cloud K8s primary",
+    "nodeName": "k8s-master",
+    "nodeIp": "10.0.2.10",
+    "sshProfileRef": "local-vbox-nat",
+    "ssh": {
+      "host": "127.0.0.1",
+      "user": "leeon",
+      "port": 2222
+    },
+    "kubernetes": {
+      "accessMode": "kubectl"
+    },
+    "capabilities": {
+      "nodeStatus": true,
+      "velero": true,
+      "backupHistory": true,
+      "backupCreate": true,
+      "backupStatus": true,
+      "restorePreview": true,
+      "restoreExecute": false,
+      "restoreStatus": false,
+      "minio": false
+    }
+  },
+  {
+    "id": "edge-recovery",
+    "displayName": "Edge K3s Recovery",
+    "kind": "edge-k3s",
+    "provider": "VirtualBox Lab",
+    "environment": "Edge K3s recovery",
+    "nodeName": "edge-k3s",
+    "nodeIp": "10.0.2.11",
+    "sshProfileRef": "local-vbox-nat",
+    "ssh": {
+      "host": "127.0.0.1",
+      "user": "leeon",
+      "port": 2223
+    },
+    "kubernetes": {
+      "accessMode": "k3s",
+      "sudo": true
+    },
+    "capabilities": {
+      "nodeStatus": true,
+      "velero": false,
+      "backupHistory": false,
+      "backupCreate": false,
+      "backupStatus": false,
+      "restorePreview": false,
+      "restoreExecute": true,
+      "restoreStatus": true,
+      "minio": true
+    }
+  }
+]

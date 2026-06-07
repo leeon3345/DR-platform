@@ -1,9 +1,14 @@
 # Node / frontend
 node_modules
 dist
+.vite
 .DS_Store
 .env
 .env.local
+
+# Codex local context
+.codexignore
+.context/handoff.md
 
 # Python / CLI backend
 # Byte-compiled / optimized / DLL files
