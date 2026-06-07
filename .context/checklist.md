@@ -127,21 +127,51 @@ TASK-04 verified values:
 
 ## TASK-05: Add Backup Creation and Restore Execution APIs
 
+Status: Done
+
+- [x] Define backend request/response contracts from `PROJECT.md` for backup creation and restore execution.
+- [x] Add safe backup creation API for supported Cloud K8s registry profiles.
+- [x] Add safe restore execution API for supported Edge K3s recovery profiles.
+- [x] Add dry-run or preview mode before any restore execution.
+- [x] Validate cluster registry capabilities before running Velero commands.
+- [x] Validate backup names, namespaces, labels, TTL, and restore targets with allowlisted patterns.
+- [x] Keep restore execution server-side only; do not execute shell commands in browser code.
+- [x] Return structured command status without leaking secrets.
+- [x] Add backup and restore status polling APIs.
+- [x] Keep existing TASK-03 and TASK-04 dashboard behavior working.
+- [x] Verify backend syntax for TASK-05 server modules.
+- [x] Verify frontend dashboard still builds successfully.
+- [x] Verify backend API server starts successfully.
+- [x] Document operational safety constraints for live backup and restore checks.
+
+TASK-05 verified values:
+- Added `POST /api/clusters/:clusterId/backups`.
+- Added `GET /api/clusters/:clusterId/backups/:backupName`.
+- Added `POST /api/clusters/:clusterId/restores/preview`.
+- Added `POST /api/clusters/:clusterId/restores`.
+- Added `GET /api/clusters/:clusterId/restores/:restoreName`.
+- Restore execution requires explicit `confirm: true`.
+- Registry capability flags added for backup creation, backup status, restore preview, restore execution, and restore status.
+- Build verification: `npm run build`.
+- Syntax verification: `node --check server/server.mjs` and `node --check server/cluster-registry.mjs`.
+- API startup verification port: `http://127.0.0.1:3999`.
+- Live backup creation was not executed in this pass because it changes cluster backup state.
+- Live restore execution was not executed in this pass because it changes target cluster state and requires explicit operator confirmation.
+
+## TASK-06: Add Metric Collection and Graph Visualizations
+
 Status: Planned
 
-- [ ] Define backend request/response contracts from `PROJECT.md` for backup creation and restore execution.
-- [ ] Add safe backup creation API for supported Cloud K8s registry profiles.
-- [ ] Add safe restore execution API for supported Edge K3s recovery profiles.
-- [ ] Add dry-run or preview mode before any restore execution.
-- [ ] Validate cluster registry capabilities before running Velero commands.
-- [ ] Validate backup names, namespaces, and restore targets with allowlisted patterns.
-- [ ] Keep restore execution server-side only; do not execute shell commands in browser code.
-- [ ] Return structured command status without leaking secrets.
-- [ ] Add restore progress or restore status polling API.
-- [ ] Keep existing TASK-03 and TASK-04 dashboard behavior working.
-- [ ] Verify backup creation against the lab Cloud K8s cluster.
-- [ ] Verify restore execution only after operator-confirmed target scope.
-- [ ] Document operational safety constraints and rollback notes.
+- [ ] Define backend metric response contracts from `PROJECT.md`.
+- [ ] Add safe cluster metric collection APIs for registered clusters.
+- [ ] Add workload health and restore-readiness metric APIs.
+- [ ] Add dashboard graph visualizations for cluster status, backup freshness, and restore readiness.
+- [ ] Keep graph data API-backed instead of static frontend-only dummy data.
+- [ ] Preserve existing topology, cluster selector, backup history, and registry behavior.
+- [ ] Return structured metric errors without leaking secrets.
+- [ ] Verify frontend build succeeds.
+- [ ] Verify backend API starts successfully.
+- [ ] Document metric source limitations and future monitoring integration points.
 
 ## Documentation Rules
 
