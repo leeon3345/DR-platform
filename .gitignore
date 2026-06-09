@@ -11,6 +11,8 @@ dist
 .context/handoff.md
 server/registry/recovery-policy.json
 server/registry/tokens.json
+.drctl/
+cli/.drctl/
 
 # Python / CLI backend
 # Byte-compiled / optimized / DLL files

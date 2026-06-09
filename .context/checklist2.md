@@ -125,3 +125,36 @@ TASK-12 verified values:
 - Backend syntax verification: `node --check server/server.mjs`.
 - Frontend build verification: `npm run build`.
 - API verification port: `http://127.0.0.1:3999`.
+
+## TASK-13: Implement drctl CLI Core Commands
+
+Status: Done
+
+- [x] Implement `drctl` using Node.js and `commander`.
+- [x] Add `drctl init --platform <url> --name <name>`.
+- [x] Add `drctl cluster list`.
+- [x] Add `drctl cluster validate <clusterId>`.
+- [x] Add `drctl policy set <clusterId> --namespace <namespace> --tier <tier> --rto <rto> --rpo <rpo>`.
+- [x] Add `drctl recommend <clusterId>`.
+- [x] Read `PLATFORM_URL` and `CLUSTER_TOKEN` from environment variables.
+- [x] Read local config from `~/.drctl/config.json`.
+- [x] Write config to `~/.drctl/config.json` after `drctl init`.
+- [x] Format human-readable command output as tables or concise status text.
+- [x] Support global `--json` output for all implemented commands.
+- [x] Print structured API/CLI errors without exposing token values.
+- [x] Mask token values in human-readable output.
+- [x] Keep CLI as a thin API client with business logic in the backend.
+- [x] Keep `kubectl`, `velero`, and SSH execution out of the CLI.
+- [x] Publish locally with `npm link` for development use.
+
+TASK-13 verified values:
+- CLI package: `cli/package.json`.
+- CLI entrypoint: `cli/bin/drctl.mjs`.
+- CLI package version: `0.1.12`.
+- Config path: `~/.drctl/config.json`.
+- Dependency install verification: `npm install` inside `cli/`.
+- Help verification: `node ./bin/drctl.mjs --help`.
+- Missing config JSON error verification: `node ./bin/drctl.mjs --json cluster list`.
+- Global link verification: `npm link`.
+- Linked command verification: `drctl --help`.
+- Temporary mock API verification covered `init`, `cluster list`, `cluster validate`, `policy set`, `recommend`, and success-case `--json`.

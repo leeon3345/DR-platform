@@ -49,19 +49,19 @@ Main product direction:
 - TASK-10: React Flow topology now responds to TASK-09 alert events, with API-polled node states, alert-aware edge animation, recovered badges, and live Incident Stream updates.
 - TASK-11: `dr-agent` implemented as a Node.js Pod agent with registry-backed heartbeat ingestion, token-hash validation, allowlisted Velero restore command polling, Docker image packaging, Helm install chart, and dashboard cluster-list agent state reflection.
 - TASK-12: Token-based user cluster isolation added with dashboard token issuance, Git-ignored token registry, scoped cluster APIs, agent registration ownership mapping, and dashboard URL/sessionStorage token handling.
+- TASK-13: `drctl` CLI package added with core API-backed operator commands for registration, cluster listing/validation, policy updates, recommendations, JSON output, local config, safe errors, and local npm linking.
 
 ## Current Next Task
 
 ```text
-TASK-13 should be drafted.
+TASK-14 should be drafted.
 ```
 
 Likely next focus:
-- Add an operator flow to generate/copy a one-command `dr-agent` Helm install command that includes the issued dashboard token.
-- Add a first-class cluster registration flow that connects `POST /api/auth/register` output to agent installation instructions.
 - Add platform-side pending restore command creation tied to approved recommendations and token-owned target clusters.
 - Add restore progress tracking and dashboard status for agent-executed restores.
 - Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets if they should live beside the agent chart.
+- Add dashboard and CLI operator flow to generate/copy a one-command `dr-agent` Helm install command that includes the issued dashboard token.
 - Keep user-cluster credentials and tokens out of Git-tracked files.
 - Keep alert ingestion decoupled from restore execution.
 - Preserve the TASK-09 backend receiver and dashboard incident polling behavior.
@@ -97,6 +97,7 @@ Agent/install bundle:
 agent/dr-agent.mjs
 agent/Dockerfile
 helm/dr-agent
+cli/bin/drctl.mjs
 ```
 
 Project/task docs:
