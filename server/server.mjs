@@ -24,10 +24,14 @@ const labelKeyPattern = /^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\/)?[A-Za-z0-
 const labelValuePattern = /^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$/;
 const recoveryPolicyRegistryUrl = new URL('./registry/recovery-policy.json', import.meta.url);
 const recoveryPolicyRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
+const tokenRegistryUrl = new URL('./registry/tokens.json', import.meta.url);
+const tokenRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
 const alertEventHistoryLimit = 20;
 const alertEventHistory = [];
 const agentCommandQueues = new Map();
 let alertEventSequence = 0;
+const managementClusterIds = new Set(['cloud-primary', 'edge-recovery']);
+const userTokenPattern = /^usr_[0-9a-f]{8}$/;
 const tierWeights = {
   critical: 100,
   high: 70,
@@ -36,6 +40,7 @@ const tierWeights = {
 };
 
 const routes = new Map([
+  ['POST /api/auth/register', registerAuthToken],
   ['GET /api/clusters', listClusters],
   ['POST /api/clusters', createCluster],
   ['GET /api/clusters/cloud-primary/status', () => getClusterStatus('cloud-primary')],
@@ -73,10 +78,18 @@ const server = http.createServer(async (request, response) => {
   }
 
   try {
+    const auth = await authorizeRoute({
+      request,
+      url,
+      method: request.method,
+      pathname: url.pathname,
+      routeMatch,
+    });
     const result = await routeMatch.handler({
       request,
       url,
       params: routeMatch.params,
+      auth,
     });
     sendJson(response, result?.statusCode || 200, result?.payload ?? result);
   } catch (error) {
@@ -93,8 +106,34 @@ server.on('error', (error) => {
   process.exitCode = 1;
 });
 
-async function listClusters() {
-  const profiles = await listClusterProfiles();
+async function registerAuthToken({ request }) {
+  const input = await readJsonBody(request);
+  const name = normalizeShortText(input.name, 'name', { maxLength: 120 });
+  const registry = await readTokenRegistry();
+  const token = issueUserToken(registry);
+  const issuedAt = new Date().toISOString();
+
+  registry.tokens[token] = {
+    name,
+    issuedAt,
+    clusters: [],
+  };
+
+  await writeTokenRegistry(registry);
+
+  return {
+    statusCode: 201,
+    payload: {
+      token,
+      name,
+      issuedAt,
+      dashboardUrl: buildDashboardUrl(request, token),
+    },
+  };
+}
+
+async function listClusters({ auth }) {
+  const profiles = await getVisibleClusterProfiles(auth);
 
   return {
     clusters: profiles.map(toPublicCluster),
@@ -109,8 +148,16 @@ async function getClusterDetails({ params }) {
   };
 }
 
-async function createCluster({ request }) {
-  const profile = await upsertClusterProfile(await readJsonBody(request));
+async function createCluster({ request, auth }) {
+  const input = await readJsonBody(request);
+  const profile = await upsertClusterProfile({
+    ...input,
+    owner: auth?.owner || input.owner,
+  });
+
+  if (auth) {
+    await addClusterToToken(auth.token, profile.id);
+  }
 
   return {
     statusCode: 201,
@@ -120,16 +167,30 @@ async function createCluster({ request }) {
   };
 }
 
-async function updateCluster({ request, params }) {
-  const profile = await upsertClusterProfile(await readJsonBody(request), params.clusterId);
+async function updateCluster({ request, params, auth }) {
+  const input = await readJsonBody(request);
+  const profile = await upsertClusterProfile({
+    ...input,
+    owner: auth?.owner || input.owner,
+  }, params.clusterId);
+
+  if (auth) {
+    await addClusterToToken(auth.token, profile.id);
+  }
 
   return {
     cluster: toPublicCluster(profile),
   };
 }
 
-async function removeCluster({ params }) {
-  return deleteClusterProfile(params.clusterId);
+async function removeCluster({ params, auth }) {
+  const result = await deleteClusterProfile(params.clusterId);
+
+  if (auth) {
+    await removeClusterFromToken(auth.token, params.clusterId);
+  }
+
+  return result;
 }
 
 async function validateCluster({ params }) {
@@ -333,10 +394,10 @@ async function getRestoreReadiness({ params }) {
   };
 }
 
-async function getClusterTopology({ params }) {
+async function getClusterTopology({ params, auth }) {
   const cluster = await getCluster(params.clusterId);
   assertCapability(cluster, 'topology');
-  const profiles = await listClusterProfiles();
+  const profiles = await getVisibleClusterProfiles(auth);
   const publicClusters = profiles.map(toPublicCluster);
   const sourceClusters = publicClusters.filter((profile) => profile.kind === 'cloud-k8s');
   const targetClusters = publicClusters.filter((profile) => profile.kind === 'edge-k3s');
@@ -445,11 +506,12 @@ async function getBackupStatus({ params }) {
   };
 }
 
-async function previewRestore({ request, params }) {
+async function previewRestore({ request, params, auth }) {
   const sourceCluster = await getCluster(params.clusterId);
   assertCapability(sourceCluster, 'restorePreview');
 
   const input = normalizeRestoreRequest(await readJsonBody(request), { preview: true });
+  await assertTokenCanAccessCluster(auth, input.targetClusterId);
   const targetCluster = await getCluster(input.targetClusterId);
   assertCapability(sourceCluster, 'backupStatus');
   assertCapability(targetCluster, 'restoreExecute');
@@ -473,11 +535,12 @@ async function previewRestore({ request, params }) {
   };
 }
 
-async function createRestore({ request, params }) {
+async function createRestore({ request, params, auth }) {
   const sourceCluster = await getCluster(params.clusterId);
   assertCapability(sourceCluster, 'restorePreview');
 
   const input = normalizeRestoreRequest(await readJsonBody(request), { preview: false });
+  await assertTokenCanAccessCluster(auth, input.targetClusterId);
   const targetCluster = await getCluster(input.targetClusterId);
   assertCapability(sourceCluster, 'backupStatus');
   assertCapability(targetCluster, 'restoreExecute');
@@ -707,7 +770,11 @@ async function getAlertEventHistory() {
 async function registerAgent({ request }) {
   const input = await readJsonBody(request);
   const clusterId = normalizeResourceName(input.clusterId, 'clusterId');
-  const token = input.token ? normalizeAgentToken(input.token) : issueAgentToken();
+  const providedToken = input.token ? normalizeAgentToken(input.token) : null;
+  const userAuth = providedToken && isUserToken(providedToken)
+    ? await validateDashboardToken(providedToken)
+    : null;
+  const token = providedToken || issueAgentToken();
   const now = new Date().toISOString();
   const existing = await getOptionalClusterProfile(clusterId);
 
@@ -732,6 +799,7 @@ async function registerAgent({ request }) {
     environment: normalizeShortText(input.environment || existing?.environment || 'External user cluster', 'environment'),
     nodeName: normalizeAgentNodeName(input.nodeName || existing?.nodeName || clusterId),
     nodeIp: normalizeShortText(input.nodeIp || existing?.nodeIp || 'agent-reported', 'nodeIp'),
+    owner: userAuth?.owner || existing?.owner || null,
     kubernetes: { accessMode: 'agent' },
     capabilities: {
       nodeStatus: true,
@@ -751,6 +819,10 @@ async function registerAgent({ request }) {
       registeredAt: existing?.agent?.registeredAt || now,
     },
   }, clusterId);
+
+  if (userAuth) {
+    await addClusterToToken(userAuth.token, clusterId);
+  }
 
   return {
     statusCode: existing ? 200 : 201,
@@ -1053,6 +1125,125 @@ function enqueueAgentRestoreCommand(cluster, input) {
   return command;
 }
 
+async function authorizeRoute({ request, url, method, pathname, routeMatch }) {
+  if (pathname === '/api/clusters' && ['GET', 'POST'].includes(method)) {
+    return requireDashboardToken(request, url);
+  }
+
+  if (!pathname.startsWith('/api/clusters/')) {
+    return null;
+  }
+
+  const clusterId = routeMatch.params?.clusterId || pathname.match(/^\/api\/clusters\/([^/]+)/)?.[1];
+
+  if (!clusterId) {
+    return null;
+  }
+
+  const requestToken = extractRequestToken(request, url);
+
+  if (managementClusterIds.has(clusterId) && !requestToken) {
+    return null;
+  }
+
+  const auth = await requireDashboardToken(request, url);
+  await assertTokenCanAccessCluster(auth, clusterId);
+
+  return auth;
+}
+
+async function requireDashboardToken(request, url) {
+  const token = extractRequestToken(request, url);
+
+  if (!token) {
+    throw new RegistryError('Missing or invalid dashboard token', {
+      code: 'INVALID_TOKEN',
+      statusCode: 401,
+    });
+  }
+
+  return validateDashboardToken(token);
+}
+
+async function validateDashboardToken(token) {
+  const normalizedToken = normalizeUserToken(token);
+  const registry = await readTokenRegistry();
+  const record = registry.tokens[normalizedToken];
+
+  if (!record) {
+    throw new RegistryError('Missing or invalid dashboard token', {
+      code: 'INVALID_TOKEN',
+      statusCode: 401,
+    });
+  }
+
+  return {
+    token: normalizedToken,
+    owner: hashUserToken(normalizedToken),
+    record,
+  };
+}
+
+async function assertTokenCanAccessCluster(auth, clusterId) {
+  if (!auth) {
+    if (managementClusterIds.has(clusterId)) {
+      return;
+    }
+
+    throw new RegistryError('Missing or invalid dashboard token', {
+      code: 'INVALID_TOKEN',
+      statusCode: 401,
+    });
+  }
+
+  if (managementClusterIds.has(clusterId) || !auth.record.clusters.includes(clusterId)) {
+    throw new RegistryError('Cluster profile not found', {
+      code: 'CLUSTER_NOT_FOUND',
+      statusCode: 404,
+      details: { clusterId },
+    });
+  }
+}
+
+async function getVisibleClusterProfiles(auth) {
+  const profiles = await listClusterProfiles();
+
+  if (!auth) {
+    return profiles;
+  }
+
+  const visibleClusterIds = new Set(auth.record.clusters);
+
+  return profiles.filter((profile) => visibleClusterIds.has(profile.id));
+}
+
+async function addClusterToToken(token, clusterId) {
+  const registry = await readTokenRegistry();
+  const record = registry.tokens[token];
+
+  if (!record) {
+    throw new RegistryError('Missing or invalid dashboard token', {
+      code: 'INVALID_TOKEN',
+      statusCode: 401,
+    });
+  }
+
+  record.clusters = [...new Set([...(record.clusters || []), clusterId])];
+  await writeTokenRegistry(registry);
+}
+
+async function removeClusterFromToken(token, clusterId) {
+  const registry = await readTokenRegistry();
+  const record = registry.tokens[token];
+
+  if (!record) {
+    return;
+  }
+
+  record.clusters = (record.clusters || []).filter((candidate) => candidate !== clusterId);
+  await writeTokenRegistry(registry);
+}
+
 async function getOptionalClusterProfile(clusterId) {
   try {
     return await getClusterProfile(clusterId);
@@ -1099,8 +1290,27 @@ function issueAgentToken() {
   return `usr_${crypto.randomBytes(24).toString('base64url')}`;
 }
 
+function issueUserToken(registry) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const token = `usr_${crypto.randomBytes(4).toString('hex')}`;
+
+    if (!registry.tokens[token]) {
+      return token;
+    }
+  }
+
+  throw new RegistryError('Unable to issue a unique dashboard token', {
+    code: 'TOKEN_ISSUE_FAILED',
+    statusCode: 500,
+  });
+}
+
 function hashAgentToken(token) {
   return `sha256:${crypto.createHash('sha256').update(token).digest('hex')}`;
+}
+
+function hashUserToken(token) {
+  return hashAgentToken(token);
 }
 
 function verifyAgentToken(token, expectedHash) {
@@ -1159,6 +1369,41 @@ function normalizeAgentToken(value) {
   return token;
 }
 
+function isUserToken(value) {
+  return typeof value === 'string' && userTokenPattern.test(value.trim());
+}
+
+function normalizeUserToken(value) {
+  if (!isUserToken(value)) {
+    throw new RegistryError('Missing or invalid dashboard token', {
+      code: 'INVALID_TOKEN',
+      statusCode: 401,
+    });
+  }
+
+  return value.trim();
+}
+
+function extractRequestToken(request, url) {
+  const authorization = request.headers.authorization || '';
+  const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
+
+  if (bearerMatch) {
+    return bearerMatch[1].trim();
+  }
+
+  return url.searchParams.get('token')?.trim() || null;
+}
+
+function buildDashboardUrl(request, token) {
+  const forwardedHost = request.headers['x-forwarded-host'];
+  const forwardedProto = request.headers['x-forwarded-proto'];
+  const requestHost = forwardedHost || request.headers.host || `${host}:${port}`;
+  const protocol = forwardedProto || 'http';
+
+  return `${protocol}://${requestHost}/dashboard?token=${encodeURIComponent(token)}`;
+}
+
 function normalizeAgentNodeName(value) {
   return normalizeShortText(value, 'nodeName', { maxLength: 120 }).replace(/[^A-Za-z0-9.-]/g, '-');
 }
@@ -1201,6 +1446,16 @@ function normalizeIsoTimestamp(value, fieldName) {
   }
 
   return date.toISOString();
+}
+
+function normalizeOptionalIsoTimestamp(value) {
+  if (!value) {
+    return new Date().toISOString();
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
 }
 
 function normalizeShortText(value, fieldName, { required = true, maxLength = 160 } = {}) {
@@ -1266,6 +1521,67 @@ async function readRecoveryPolicyRegistry() {
 async function writeRecoveryPolicyRegistry(registry) {
   await fs.mkdir(recoveryPolicyRegistryDirectoryUrl, { recursive: true });
   await fs.writeFile(recoveryPolicyRegistryUrl, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+}
+
+async function readTokenRegistry() {
+  try {
+    const text = await fs.readFile(tokenRegistryUrl, 'utf8');
+    const registry = JSON.parse(text);
+
+    return normalizeTokenRegistry(registry);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { tokens: {} };
+    }
+
+    if (error instanceof SyntaxError) {
+      throw new RegistryError('Token registry contains invalid JSON', {
+        code: 'INVALID_TOKEN_REGISTRY',
+        statusCode: 500,
+      });
+    }
+
+    throw error;
+  }
+}
+
+async function writeTokenRegistry(registry) {
+  await fs.mkdir(tokenRegistryDirectoryUrl, { recursive: true });
+  await fs.writeFile(tokenRegistryUrl, `${JSON.stringify(normalizeTokenRegistry(registry), null, 2)}\n`, 'utf8');
+}
+
+function normalizeTokenRegistry(registry) {
+  const tokens = registry && typeof registry === 'object' && !Array.isArray(registry)
+    ? registry.tokens || {}
+    : {};
+
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
+    throw new RegistryError('Token registry must contain a tokens object', {
+      code: 'INVALID_TOKEN_REGISTRY',
+      statusCode: 500,
+    });
+  }
+
+  return {
+    tokens: Object.fromEntries(
+      Object.entries(tokens).map(([token, record]) => [
+        normalizeUserToken(token),
+        normalizeTokenRecord(record),
+      ]),
+    ),
+  };
+}
+
+function normalizeTokenRecord(record) {
+  const value = record && typeof record === 'object' && !Array.isArray(record) ? record : {};
+
+  return {
+    name: normalizeShortText(value.name || 'registered-user', 'name', { maxLength: 120 }),
+    issuedAt: normalizeOptionalIsoTimestamp(value.issuedAt),
+    clusters: Array.isArray(value.clusters)
+      ? [...new Set(value.clusters.map((clusterId) => normalizeResourceName(clusterId, 'clusters')).filter(Boolean))]
+      : [],
+  };
 }
 
 function getRecoveryPolicyClusterState(registry, clusterId) {
@@ -2186,7 +2502,7 @@ function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Content-Type': 'application/json',
   });
 

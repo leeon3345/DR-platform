@@ -10,6 +10,7 @@ dist
 .codexignore
 .context/handoff.md
 server/registry/recovery-policy.json
+server/registry/tokens.json
 
 # Python / CLI backend
 # Byte-compiled / optimized / DLL files

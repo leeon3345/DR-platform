@@ -1,4 +1,4 @@
-const API_PATHS = {
+const INTERNAL_API_PATHS = {
   clusters: "/api/clusters",
   cloudStatus: "/api/clusters/cloud-primary/status",
   edgeStatus: "/api/clusters/edge-recovery/status",
@@ -19,6 +19,29 @@ const API_PATHS = {
   latestEvent: "/api/events/latest",
   eventHistory: "/api/events/history",
 };
+
+const TENANT_API_PATHS = {
+  clusters: "/api/clusters",
+  latestEvent: "/api/events/latest",
+  eventHistory: "/api/events/history",
+};
+
+const DASHBOARD_TOKEN_STORAGE_KEY = "dr-platform-dashboard-token";
+
+export function initializeDashboardToken() {
+  const urlToken = new URLSearchParams(window.location.search).get("token")?.trim();
+
+  if (urlToken) {
+    window.sessionStorage.setItem(DASHBOARD_TOKEN_STORAGE_KEY, urlToken);
+    return urlToken;
+  }
+
+  return window.sessionStorage.getItem(DASHBOARD_TOKEN_STORAGE_KEY)?.trim() || "";
+}
+
+export function getDashboardToken() {
+  return window.sessionStorage.getItem(DASHBOARD_TOKEN_STORAGE_KEY)?.trim() || "";
+}
 
 function getApiBaseUrls() {
   const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -44,11 +67,12 @@ function buildUrl(baseUrl, path) {
 
 async function getJson(path, { signal } = {}) {
   let lastError = null;
+  const token = getDashboardToken();
 
   for (const baseUrl of getApiBaseUrls()) {
     try {
       const response = await fetch(buildUrl(baseUrl, path), {
-        headers: { Accept: "application/json" },
+        headers: buildHeaders(token),
         signal,
       });
       const text = await response.text();
@@ -75,15 +99,13 @@ async function getJson(path, { signal } = {}) {
 
 async function postJson(path, { body, signal } = {}) {
   let lastError = null;
+  const token = getDashboardToken();
 
   for (const baseUrl of getApiBaseUrls()) {
     try {
       const response = await fetch(buildUrl(baseUrl, path), {
         method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
+        headers: buildHeaders(token, { json: true }),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal,
       });
@@ -109,9 +131,19 @@ async function postJson(path, { body, signal } = {}) {
   throw new Error(lastError?.message ?? "API request failed");
 }
 
+function buildHeaders(token, { json = false } = {}) {
+  return {
+    Accept: "application/json",
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 export async function loadDashboardData({ signal } = {}) {
+  const token = getDashboardToken();
+  const paths = token ? TENANT_API_PATHS : INTERNAL_API_PATHS;
   const entries = await Promise.all(
-    Object.entries(API_PATHS).map(async ([key, path]) => {
+    Object.entries(paths).map(async ([key, path]) => {
       try {
         const request = key.endsWith("Validation") ? postJson : getJson;
 
@@ -130,11 +162,11 @@ export async function loadDashboardData({ signal } = {}) {
 }
 
 export async function loadEventHistory({ signal } = {}) {
-  return getJson(API_PATHS.eventHistory, { signal });
+  return getJson(INTERNAL_API_PATHS.eventHistory, { signal });
 }
 
 export async function loadLatestEvent({ signal } = {}) {
-  return getJson(API_PATHS.latestEvent, { signal });
+  return getJson(INTERNAL_API_PATHS.latestEvent, { signal });
 }
 
 export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {

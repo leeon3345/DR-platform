@@ -12,7 +12,13 @@ import {
   getSmoothStepPath,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { approveRecoveryRecommendation, loadDashboardData, loadEventHistory, loadLatestEvent } from "./api";
+import {
+  approveRecoveryRecommendation,
+  initializeDashboardToken,
+  loadDashboardData,
+  loadEventHistory,
+  loadLatestEvent,
+} from "./api";
 
 const statusStyles = {
   error: {
@@ -1492,6 +1498,7 @@ function buildLiveStream(apiResults, apiLoading, fallbackStream, alertEvents = [
 
 function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
   const apiClusters = asArray(getApiResult(apiResults, "clusters"), ["clusters", "items"]);
+  const hasClusterResponse = Boolean(getApiResult(apiResults, "clusters"));
   const overallStatus = deriveOverallStatus(apiResults, apiLoading);
   const safeErrors = endpointErrors(apiResults);
   const validationIssues = validationErrors(apiResults);
@@ -1555,7 +1562,9 @@ function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
           isAgentCluster,
         };
       })
-    : clusterScenarios;
+    : apiLoading || !hasClusterResponse
+      ? clusterScenarios
+      : [];
 
   return sourceClusters.map((cluster) => {
     const clusterStatus = cluster.isAgentCluster ? deriveAgentDashboardStatus(cluster) : overallStatus;
@@ -1762,6 +1771,27 @@ function MetricGraphPanel({ group }) {
   );
 }
 
+function RegistrationGuidance() {
+  return (
+    <main className="grid min-h-screen place-items-center bg-slate-100 px-5 text-slate-950">
+      <section className="w-full max-w-2xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start gap-4">
+          <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-950 text-white">
+            <Icon name="shield" className="h-6 w-6" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-xl font-black text-slate-950">Dashboard token required</h1>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
+              클러스터별 격리가 켜져 있습니다. `POST /api/auth/register`로 발급된 대시보드 URL을 사용하거나,
+              dr-agent 설치 과정에서 받은 `?token=usr_...` 링크로 접속하세요.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function RecoveryRecommendationPanel({ recommendations, loading, error, approvalError, pendingWorkloadId, onApprove }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -1893,6 +1923,12 @@ function ClusterList({ clusters, activeClusterId, onSelect }) {
       </div>
 
       <div className="mt-4 grid gap-3">
+        {clusters.length === 0 && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-5 text-sm font-semibold leading-6 text-slate-600">
+            이 토큰에 연결된 클러스터가 아직 없습니다. dr-agent 등록이 완료되면 여기에 표시됩니다.
+          </div>
+        )}
+
         {clusters.map((cluster) => {
           const isActive = cluster.id === activeClusterId;
 
@@ -1943,6 +1979,7 @@ function ClusterList({ clusters, activeClusterId, onSelect }) {
 }
 
 function App() {
+  const [dashboardToken] = useState(() => initializeDashboardToken());
   const [activeClusterId, setActiveClusterId] = useState(clusterScenarios[0].id);
   const [apiResults, setApiResults] = useState(null);
   const [apiLoading, setApiLoading] = useState(true);
@@ -1959,7 +1996,7 @@ function App() {
   const metricGroups = useMemo(() => buildMetricGroups(apiResults, apiLoading), [apiResults, apiLoading]);
   const recommendations = useMemo(() => getRecoveryRecommendations(apiResults), [apiResults]);
   const activeCluster = useMemo(
-    () => dashboardClusters.find((cluster) => cluster.id === activeClusterId) ?? dashboardClusters[0],
+    () => dashboardClusters.find((cluster) => cluster.id === activeClusterId) ?? dashboardClusters[0] ?? clusterScenarios[0],
     [activeClusterId, dashboardClusters],
   );
   const activeNodes = useMemo(
@@ -1990,6 +2027,11 @@ function App() {
   const recommendationError = getApiError(apiResults, "cloudRecommendations");
 
   useEffect(() => {
+    if (!dashboardToken) {
+      setApiLoading(false);
+      return undefined;
+    }
+
     const controller = new AbortController();
 
     setApiLoading(true);
@@ -2016,9 +2058,13 @@ function App() {
       });
 
     return () => controller.abort();
-  }, [reloadNonce]);
+  }, [dashboardToken, reloadNonce]);
 
   useEffect(() => {
+    if (!dashboardToken) {
+      return undefined;
+    }
+
     let active = true;
     let controller = null;
 
@@ -2050,7 +2096,7 @@ function App() {
       window.clearInterval(intervalId);
       controller?.abort();
     };
-  }, []);
+  }, [dashboardToken]);
 
   async function handleApproveRecommendation(workloadId) {
     setPendingWorkloadId(workloadId);
@@ -2071,6 +2117,10 @@ function App() {
       setActiveClusterId(dashboardClusters[0]?.id ?? clusterScenarios[0].id);
     }
   }, [activeClusterId, dashboardClusters]);
+
+  if (!dashboardToken) {
+    return <RegistrationGuidance />;
+  }
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-950">

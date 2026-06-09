@@ -84,3 +84,44 @@ TASK-11 verified values:
 - Build verification: `npm run build`.
 - Docker verification: `docker build -t dr-agent:latest ./agent`.
 - Helm lint was not run because `helm` is not installed on this machine.
+
+## TASK-12: Token Issuance and Cluster Isolation
+
+Status: Done
+
+- [x] Add `POST /api/auth/register` to issue `usr_<8 random hex chars>` dashboard tokens.
+- [x] Return a dashboard URL with `?token=<token>` from registration.
+- [x] Store token-to-cluster mappings in a local Git-ignored registry file.
+- [x] Keep plaintext dashboard tokens out of Git-tracked files.
+- [x] Add token validation for `Authorization: Bearer <token>`.
+- [x] Add token validation for `?token=<token>`.
+- [x] Scope `GET /api/clusters` to token-owned user clusters.
+- [x] Scope cluster detail, status, metric, workload, backup, restore, topology, policy, and recommendation APIs by token ownership.
+- [x] Return structured `INVALID_TOKEN` for missing or invalid user tokens.
+- [x] Return `CLUSTER_NOT_FOUND` for cross-tenant cluster access.
+- [x] Keep internal management cluster APIs accessible without token for `cloud-primary` and `edge-recovery`.
+- [x] Prevent dashboard-token requests from reading internal management cluster APIs.
+- [x] Map agent registration with a valid issued token to the token-owned cluster list.
+- [x] Preserve existing agent token hash validation behavior.
+- [x] Update dashboard API calls to send the stored token as an Authorization header.
+- [x] Read dashboard token from URL query parameter on load.
+- [x] Store dashboard token in `sessionStorage`.
+- [x] Show registration guidance when the dashboard has no token.
+- [x] Show only token-owned clusters in the dashboard cluster selector.
+- [x] Verify backend syntax succeeds.
+- [x] Verify frontend build succeeds.
+- [x] Verify registration and token validation behavior through local API checks.
+
+TASK-12 verified values:
+- Updated backend files: `server/server.mjs`, `server/cluster-registry.mjs`.
+- Updated frontend files: `src/api.js`, `src/App.jsx`.
+- Updated ignore file: `.gitignore`.
+- Token registry path: `server/registry/tokens.json`.
+- Token registry Git handling: ignored by `.gitignore`.
+- Registration endpoint: `POST /api/auth/register`.
+- Token format verified: `usr_<8 lowercase hex chars>`.
+- Valid token list check: `GET /api/clusters` returned only the token-owned cluster list.
+- Invalid token check: `GET /api/clusters` with an invalid bearer token returned `401 INVALID_TOKEN`.
+- Backend syntax verification: `node --check server/server.mjs`.
+- Frontend build verification: `npm run build`.
+- API verification port: `http://127.0.0.1:3999`.

@@ -87,6 +87,7 @@ export function toPublicCluster(profile) {
     } : null,
     kubernetes: profile.kubernetes,
     capabilities: profile.capabilities,
+    owner: profile.owner || null,
   };
 
   if (profile.agent) {
@@ -297,6 +298,7 @@ function normalizeClusterProfile(input, idOverride = null) {
       sudo: Boolean(input.kubernetes?.sudo || accessMode === 'k3s'),
     },
     capabilities: normalizeCapabilities(kind, input.capabilities || {}),
+    owner: normalizeOptionalString(input.owner, null),
   };
 
   if (kind === 'user-k8s') {

@@ -48,16 +48,18 @@ Main product direction:
 - TASK-09: Prometheus Alertmanager webhook receiver, sanitized in-memory event history APIs, and dashboard incident polling added. User-cluster alert rule/agent installation is deferred to the next task.
 - TASK-10: React Flow topology now responds to TASK-09 alert events, with API-polled node states, alert-aware edge animation, recovered badges, and live Incident Stream updates.
 - TASK-11: `dr-agent` implemented as a Node.js Pod agent with registry-backed heartbeat ingestion, token-hash validation, allowlisted Velero restore command polling, Docker image packaging, Helm install chart, and dashboard cluster-list agent state reflection.
+- TASK-12: Token-based user cluster isolation added with dashboard token issuance, Git-ignored token registry, scoped cluster APIs, agent registration ownership mapping, and dashboard URL/sessionStorage token handling.
 
 ## Current Next Task
 
 ```text
-TASK-12 should be drafted.
+TASK-13 should be drafted.
 ```
 
 Likely next focus:
-- Add an operator flow to generate/copy a one-command `dr-agent` Helm install command.
-- Add a platform-side pending restore command creator tied to approved recommendations.
+- Add an operator flow to generate/copy a one-command `dr-agent` Helm install command that includes the issued dashboard token.
+- Add a first-class cluster registration flow that connects `POST /api/auth/register` output to agent installation instructions.
+- Add platform-side pending restore command creation tied to approved recommendations and token-owned target clusters.
 - Add restore progress tracking and dashboard status for agent-executed restores.
 - Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets if they should live beside the agent chart.
 - Keep user-cluster credentials and tokens out of Git-tracked files.
@@ -86,6 +88,7 @@ server/lab-config.mjs
 server/cluster-registry.mjs
 server/registry/clusters.json
 server/registry/recovery-policy.json (local, Git-ignored)
+server/registry/tokens.json (local, Git-ignored)
 ```
 
 Agent/install bundle:
@@ -101,6 +104,7 @@ Project/task docs:
 ```text
 .context/PROJECT.md
 .context/checklist.md
+.context/checklist2.md
 .context/task8.md
 ```
 
@@ -196,6 +200,7 @@ POST /api/agent/register
 POST /api/agent/heartbeat
 GET /api/agent/commands?token=<agent-token>&clusterId=<cluster-id>
 POST /api/agent/status
+POST /api/auth/register
 ```
 
 ## Rules
