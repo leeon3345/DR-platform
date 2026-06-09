@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dr-agent.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "dr-agent.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dr-agent.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "dr-agent.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "dr-agent.serviceAccountName" . }}
+      containers:
+        - name: dr-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PLATFORM_URL
+              value: {{ required "agent.platformUrl is required" .Values.agent.platformUrl | quote }}
+            - name: CLUSTER_ID
+              value: {{ required "agent.clusterId is required" .Values.agent.clusterId | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.agent.pollInterval | quote }}
+            - name: CLUSTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dr-agent.fullname" . }}-auth
+                  key: CLUSTER_TOKEN
+          resources:
+{{ toYaml .Values.resources | indent 12 }}

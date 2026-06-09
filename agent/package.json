@@ -1,0 +1,9 @@
+{
+  "name": "dr-agent",
+  "version": "0.1.10",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node dr-agent.mjs"
+  }
+}

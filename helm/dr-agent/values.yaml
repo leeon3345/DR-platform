@@ -1,0 +1,22 @@
+image:
+  repository: dr-agent
+  tag: latest
+  pullPolicy: IfNotPresent
+
+agent:
+  platformUrl: ""
+  clusterId: user-k8s
+  token: ""
+  pollInterval: 30000
+
+serviceAccount:
+  create: true
+  name: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

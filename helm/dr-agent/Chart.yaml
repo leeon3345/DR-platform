@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dr-agent
+description: User-cluster heartbeat and Velero restore polling agent for DR Platform
+type: application
+version: 0.1.10
+appVersion: "0.1.10"

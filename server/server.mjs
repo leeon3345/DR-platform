@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { URL } from 'node:url';
 import { minio } from './lab-config.mjs';
@@ -25,6 +26,7 @@ const recoveryPolicyRegistryUrl = new URL('./registry/recovery-policy.json', imp
 const recoveryPolicyRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
 const alertEventHistoryLimit = 20;
 const alertEventHistory = [];
+const agentCommandQueues = new Map();
 let alertEventSequence = 0;
 const tierWeights = {
   critical: 100,
@@ -44,6 +46,10 @@ const routes = new Map([
   ['POST /api/events/alert', receiveAlertEvent],
   ['GET /api/events/latest', getLatestAlertEvent],
   ['GET /api/events/history', getAlertEventHistory],
+  ['POST /api/agent/register', registerAgent],
+  ['POST /api/agent/heartbeat', receiveAgentHeartbeat],
+  ['GET /api/agent/commands', getAgentCommands],
+  ['POST /api/agent/status', receiveAgentStatus],
 ]);
 
 const server = http.createServer(async (request, response) => {
@@ -185,6 +191,11 @@ async function validateCluster({ params }) {
 
 async function getClusterStatus(clusterId) {
   const cluster = await getCluster(clusterId);
+
+  if (cluster.kind === 'user-k8s') {
+    return normalizeAgentNodeStatus(cluster);
+  }
+
   assertCapability(cluster, 'nodeStatus');
   const result = await runSshCommand(cluster, cluster.commands.nodeStatus);
   const node = parseJsonCommand(result.stdout, `${cluster.id}:nodeStatus`);
@@ -227,6 +238,11 @@ async function getClusterMetrics({ params }) {
 
 async function getWorkloadHealth({ params }) {
   const cluster = await getCluster(params.clusterId);
+
+  if (cluster.kind === 'user-k8s') {
+    return normalizeAgentWorkloads(cluster);
+  }
+
   assertCapability(cluster, 'workloads');
   const result = await runSshCommand(cluster, cluster.commands.workloads);
   const podList = parseJsonCommand(result.stdout, `${cluster.id}:workloads`);
@@ -369,6 +385,14 @@ async function getVeleroLocation() {
 
 async function getBackupHistory({ params } = {}) {
   const cluster = await getCluster(params?.clusterId || 'cloud-primary');
+
+  if (cluster.kind === 'user-k8s') {
+    return {
+      backups: (cluster.agent?.state?.backups || []).map(normalizeAgentBackup),
+      lastCheckedTimestamp: cluster.agent?.lastHeartbeatAt || new Date().toISOString(),
+    };
+  }
+
   assertCapability(cluster, 'backups');
   const result = await runSshCommand(cluster, cluster.commands.backups);
   const backupList = parseJsonCommand(result.stdout, `${cluster.id}:backups`);
@@ -460,6 +484,33 @@ async function createRestore({ request, params }) {
 
   const sourceBackup = await fetchBackup(sourceCluster, input.backupName);
   const manifest = buildRestoreManifest(input);
+
+  if (targetCluster.kind === 'user-k8s') {
+    const command = enqueueAgentRestoreCommand(targetCluster, input);
+
+    return {
+      statusCode: 202,
+      payload: {
+        restore: {
+          restoreName: input.restoreName,
+          backupName: input.backupName,
+          status: 'PendingAgent',
+          errors: 0,
+          warnings: 0,
+          createdTimestamp: command.createdAt,
+          startTimestamp: null,
+          completionTimestamp: null,
+          includedNamespaces: input.namespaces,
+        },
+        command,
+        sourceBackup: normalizeBackup(sourceBackup),
+        sourceClusterId: sourceCluster.id,
+        targetClusterId: targetCluster.id,
+        acceptedTimestamp: command.createdAt,
+      },
+    };
+  }
+
   const result = await runSshCommand(
     targetCluster,
     buildCreateManifestCommand(targetCluster.commands.restoreExecute, manifest),
@@ -481,6 +532,38 @@ async function createRestore({ request, params }) {
 async function getRestoreStatus({ params }) {
   const cluster = await getCluster(params.clusterId);
   const restoreName = normalizeResourceName(params.restoreName, 'restoreName');
+
+  if (cluster.kind === 'user-k8s') {
+    const status = Object.values(cluster.agent?.restoreStatuses || {})
+      .find((candidate) => candidate.restoreName === restoreName || candidate.operationId === restoreName);
+
+    if (!status) {
+      throw new RegistryError('Agent restore status not found', {
+        code: 'RESTORE_NOT_FOUND',
+        statusCode: 404,
+        details: { clusterId: cluster.id, restoreName },
+      });
+    }
+
+    return {
+      restore: {
+        restoreName: status.restoreName || restoreName,
+        backupName: status.backupName || null,
+        status: status.phase,
+        errors: 0,
+        warnings: 0,
+        createdTimestamp: null,
+        startTimestamp: null,
+        completionTimestamp: status.phase === 'Completed' || status.phase === 'Failed' ? status.updatedAt : null,
+        includedNamespaces: null,
+      },
+      clusterId: cluster.id,
+      operationId: status.operationId,
+      message: status.message,
+      lastCheckedTimestamp: new Date().toISOString(),
+    };
+  }
+
   assertCapability(cluster, 'restoreStatus');
 
   const result = await runSshCommand(
@@ -621,6 +704,150 @@ async function getAlertEventHistory() {
   };
 }
 
+async function registerAgent({ request }) {
+  const input = await readJsonBody(request);
+  const clusterId = normalizeResourceName(input.clusterId, 'clusterId');
+  const token = input.token ? normalizeAgentToken(input.token) : issueAgentToken();
+  const now = new Date().toISOString();
+  const existing = await getOptionalClusterProfile(clusterId);
+
+  if (existing && existing.kind !== 'user-k8s') {
+    throw new RegistryError('Cluster id is already registered for a non-agent cluster', {
+      code: 'CLUSTER_ID_CONFLICT',
+      statusCode: 409,
+      details: { clusterId },
+    });
+  }
+
+  if (existing?.agent?.agentAuthHash && input.token) {
+    assertAgentTokenMatches(existing, token);
+  }
+
+  const profile = await upsertClusterProfile({
+    ...(existing || {}),
+    id: clusterId,
+    displayName: normalizeShortText(input.displayName || existing?.displayName || clusterId, 'displayName'),
+    kind: 'user-k8s',
+    provider: normalizeShortText(input.provider || existing?.provider || 'User Cluster', 'provider'),
+    environment: normalizeShortText(input.environment || existing?.environment || 'External user cluster', 'environment'),
+    nodeName: normalizeAgentNodeName(input.nodeName || existing?.nodeName || clusterId),
+    nodeIp: normalizeShortText(input.nodeIp || existing?.nodeIp || 'agent-reported', 'nodeIp'),
+    kubernetes: { accessMode: 'agent' },
+    capabilities: {
+      nodeStatus: true,
+      velero: true,
+      backupHistory: true,
+      restoreExecute: true,
+      restoreStatus: true,
+      workloads: true,
+      metrics: true,
+      backupFreshness: true,
+      restoreReadiness: true,
+      topology: true,
+    },
+    agent: {
+      ...(existing?.agent || {}),
+      agentAuthHash: hashAgentToken(token),
+      registeredAt: existing?.agent?.registeredAt || now,
+    },
+  }, clusterId);
+
+  return {
+    statusCode: existing ? 200 : 201,
+    payload: {
+      cluster: toPublicCluster(profile),
+      token,
+      registeredAt: profile.agent.registeredAt,
+    },
+  };
+}
+
+async function receiveAgentHeartbeat({ request }) {
+  const input = await readJsonBody(request);
+  const cluster = await requireAgentCluster(input);
+  const collectedAt = normalizeIsoTimestamp(input.collectedAt || new Date().toISOString(), 'collectedAt');
+  const heartbeat = normalizeAgentHeartbeat(input);
+  const primaryNode = heartbeat.nodes[0];
+  const now = new Date().toISOString();
+  const profile = await upsertClusterProfile({
+    ...cluster,
+    nodeName: primaryNode?.name || cluster.nodeName,
+    nodeIp: cluster.nodeIp || 'agent-reported',
+    agent: {
+      ...(cluster.agent || {}),
+      lastHeartbeatAt: now,
+      lastCollectedAt: collectedAt,
+      state: {
+        nodes: heartbeat.nodes,
+        workloads: heartbeat.workloads,
+        backups: heartbeat.backups,
+      },
+    },
+  }, cluster.id);
+
+  return {
+    statusCode: 202,
+    payload: {
+      accepted: true,
+      cluster: toPublicCluster(profile),
+      lastHeartbeatAt: profile.agent.lastHeartbeatAt,
+    },
+  };
+}
+
+async function getAgentCommands({ url }) {
+  const cluster = await requireAgentCluster({
+    clusterId: url.searchParams.get('clusterId'),
+    token: url.searchParams.get('token'),
+  });
+  const queue = agentCommandQueues.get(cluster.id) || [];
+  const commands = queue.splice(0, queue.length).map((command) => ({
+    ...command,
+    dispatchedAt: new Date().toISOString(),
+  }));
+
+  agentCommandQueues.set(cluster.id, queue);
+
+  return {
+    commands,
+  };
+}
+
+async function receiveAgentStatus({ request }) {
+  const input = await readJsonBody(request);
+  const cluster = await requireAgentCluster(input);
+  const operationId = normalizeAgentOperationId(input.operationId || input.restoreName, 'operationId');
+  const restoreName = normalizeResourceName(input.restoreName || operationId, 'restoreName');
+  const phase = normalizeAgentPhase(input.phase || input.status || 'Unknown');
+  const updatedAt = new Date().toISOString();
+  const profile = await upsertClusterProfile({
+    ...cluster,
+    agent: {
+      ...(cluster.agent || {}),
+      restoreStatuses: {
+        ...(cluster.agent?.restoreStatuses || {}),
+        [operationId]: {
+          operationId,
+          restoreName,
+          backupName: input.backupName ? normalizeResourceName(input.backupName, 'backupName') : null,
+          phase,
+          message: normalizeShortText(input.message || '', 'message', { required: false, maxLength: 500 }),
+          updatedAt,
+        },
+      },
+    },
+  }, cluster.id);
+
+  return {
+    statusCode: 202,
+    payload: {
+      accepted: true,
+      clusterId: cluster.id,
+      restoreStatus: profile.agent.restoreStatuses[operationId],
+    },
+  };
+}
+
 async function getMinioStatus() {
   const edgeCluster = await getCluster('edge-recovery');
   assertCapability(edgeCluster, 'minioService');
@@ -731,6 +958,273 @@ function normalizeWorkloads(cluster, podList) {
     pods: pods.slice(0, 50),
     nodeName: cluster.nodeName,
   };
+}
+
+function normalizeAgentNodeStatus(cluster) {
+  const nodes = cluster.agent?.state?.nodes || [];
+  const readyNodes = nodes.filter((node) => node.status === 'Ready');
+  const primaryNode = nodes[0] || {};
+
+  return {
+    clusterId: cluster.id,
+    displayName: cluster.displayName,
+    clusterKind: cluster.kind,
+    nodeName: primaryNode.name || cluster.nodeName,
+    nodeIp: cluster.nodeIp,
+    kubernetesVersion: primaryNode.version || null,
+    healthStatus: nodes.length > 0 && readyNodes.length === nodes.length ? 'Ready' : 'NotReady',
+    readyNodes: readyNodes.length,
+    totalNodes: nodes.length,
+    lastCheckedTimestamp: cluster.agent?.lastHeartbeatAt || new Date().toISOString(),
+  };
+}
+
+function normalizeAgentWorkloads(cluster) {
+  const workloads = cluster.agent?.state?.workloads || {};
+  const runningPods = workloads.runningPods || 0;
+  const pendingPods = workloads.pendingPods || 0;
+  const failedPods = workloads.failedPods || 0;
+  const namespaces = (workloads.namespaces || []).map((namespace) => ({
+    namespace,
+    podCount: null,
+  }));
+  const totalPods = runningPods + pendingPods + failedPods;
+
+  return {
+    clusterId: cluster.id,
+    collectedAt: cluster.agent?.lastCollectedAt || cluster.agent?.lastHeartbeatAt || new Date().toISOString(),
+    summary: {
+      totalPods,
+      runningPods,
+      pendingPods,
+      failedPods,
+      succeededPods: 0,
+      unknownPods: 0,
+      restartCount: 0,
+      namespaces,
+      namespaceHealth: namespaces.map(({ namespace }) => ({
+        namespace,
+        totalPods: 0,
+        runningPods: 0,
+        pendingPods: 0,
+        failedPods: 0,
+        succeededPods: 0,
+        unknownPods: 0,
+      })),
+    },
+    pods: [],
+    nodeName: cluster.nodeName,
+  };
+}
+
+function normalizeAgentBackup(backup) {
+  return {
+    backupName: backup.name,
+    status: backup.phase,
+    errors: 0,
+    warnings: 0,
+    createdTimestamp: backup.timestamp,
+    completionTimestamp: backup.phase === 'Completed' ? backup.timestamp : null,
+    expirationTimestamp: null,
+    storageLocation: null,
+    includedNamespaces: null,
+    ttl: null,
+  };
+}
+
+function enqueueAgentRestoreCommand(cluster, input) {
+  const operationId = `restore-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const command = {
+    id: operationId,
+    operationId,
+    type: 'velero-restore',
+    allowlist: 'velero restore create',
+    restoreName: input.restoreName,
+    backupName: input.backupName,
+    namespaces: input.namespaces,
+    labels: input.labels,
+    createdAt: new Date().toISOString(),
+  };
+  const queue = agentCommandQueues.get(cluster.id) || [];
+
+  queue.push(command);
+  agentCommandQueues.set(cluster.id, queue);
+
+  return command;
+}
+
+async function getOptionalClusterProfile(clusterId) {
+  try {
+    return await getClusterProfile(clusterId);
+  } catch (error) {
+    if (error instanceof RegistryError && error.code === 'CLUSTER_NOT_FOUND') {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function requireAgentCluster(input) {
+  const clusterId = normalizeResourceName(input.clusterId, 'clusterId');
+  const token = normalizeAgentToken(input.token);
+  const profile = await getClusterProfile(clusterId);
+
+  if (profile.kind !== 'user-k8s') {
+    throw new RegistryError('Cluster profile is not registered for agent access', {
+      code: 'CLUSTER_NOT_FOUND',
+      statusCode: 404,
+      details: { clusterId },
+    });
+  }
+
+  assertAgentTokenMatches(profile, token);
+
+  return profile;
+}
+
+function assertAgentTokenMatches(profile, token) {
+  const expectedHash = profile.agent?.agentAuthHash;
+
+  if (!expectedHash || !verifyAgentToken(token, expectedHash)) {
+    throw new RegistryError('Agent token is invalid for this cluster', {
+      code: 'INVALID_TOKEN',
+      statusCode: 401,
+      details: { clusterId: profile.id },
+    });
+  }
+}
+
+function issueAgentToken() {
+  return `usr_${crypto.randomBytes(24).toString('base64url')}`;
+}
+
+function hashAgentToken(token) {
+  return `sha256:${crypto.createHash('sha256').update(token).digest('hex')}`;
+}
+
+function verifyAgentToken(token, expectedHash) {
+  const actual = Buffer.from(hashAgentToken(token));
+  const expected = Buffer.from(String(expectedHash));
+
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function normalizeAgentHeartbeat(input) {
+  const nodes = Array.isArray(input.nodes) ? input.nodes.map((node, index) => ({
+    name: normalizeAgentNodeName(node?.name || `node-${index + 1}`),
+    status: normalizeAgentNodePhase(node?.status || 'Unknown'),
+    version: normalizeShortText(node?.version || '', 'version', { required: false, maxLength: 80 }),
+  })).slice(0, 100) : [];
+  const workloads = input.workloads && typeof input.workloads === 'object' && !Array.isArray(input.workloads)
+    ? input.workloads
+    : {};
+  const backups = Array.isArray(input.backups) ? input.backups.map((backup) => ({
+    name: normalizeResourceName(backup?.name, 'backup.name'),
+    phase: normalizeAgentPhase(backup?.phase || 'Unknown'),
+    timestamp: normalizeIsoTimestamp(backup?.timestamp || new Date().toISOString(), 'backup.timestamp'),
+  })).slice(0, 100) : [];
+
+  return {
+    nodes,
+    workloads: {
+      runningPods: normalizeAgentCount(workloads.runningPods, 'workloads.runningPods'),
+      pendingPods: normalizeAgentCount(workloads.pendingPods, 'workloads.pendingPods'),
+      failedPods: normalizeAgentCount(workloads.failedPods, 'workloads.failedPods'),
+      namespaces: Array.isArray(workloads.namespaces)
+        ? workloads.namespaces.map((namespace) => normalizeResourceName(namespace, 'workloads.namespaces')).slice(0, 100)
+        : [],
+    },
+    backups,
+  };
+}
+
+function normalizeAgentToken(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new RegistryError('Missing required field: token', {
+      code: 'MISSING_REQUIRED_FIELD',
+      details: { fieldName: 'token' },
+    });
+  }
+
+  const token = value.trim();
+
+  if (token.length < 8 || token.length > 256 || !/^[A-Za-z0-9._:-]+$/.test(token)) {
+    throw new RegistryError('Agent token must be an opaque single-line value', {
+      code: 'INVALID_TOKEN',
+      details: { fieldName: 'token' },
+    });
+  }
+
+  return token;
+}
+
+function normalizeAgentNodeName(value) {
+  return normalizeShortText(value, 'nodeName', { maxLength: 120 }).replace(/[^A-Za-z0-9.-]/g, '-');
+}
+
+function normalizeAgentNodePhase(value) {
+  const phase = normalizeShortText(value, 'node.status', { maxLength: 40 });
+
+  return phase === 'Ready' ? 'Ready' : phase;
+}
+
+function normalizeAgentPhase(value) {
+  return normalizeShortText(value, 'phase', { maxLength: 80 });
+}
+
+function normalizeAgentOperationId(value, fieldName) {
+  return normalizeShortText(value, fieldName, { maxLength: 120 }).replace(/[^A-Za-z0-9._:-]/g, '-');
+}
+
+function normalizeAgentCount(value, fieldName) {
+  const number = Number.parseInt(value ?? 0, 10);
+
+  if (!Number.isInteger(number) || number < 0 || number > 100000) {
+    throw new RegistryError(`${fieldName} must be a non-negative integer`, {
+      code: 'INVALID_AGENT_PAYLOAD',
+      details: { fieldName },
+    });
+  }
+
+  return number;
+}
+
+function normalizeIsoTimestamp(value, fieldName) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new RegistryError(`${fieldName} must be an ISO timestamp`, {
+      code: 'INVALID_AGENT_PAYLOAD',
+      details: { fieldName },
+    });
+  }
+
+  return date.toISOString();
+}
+
+function normalizeShortText(value, fieldName, { required = true, maxLength = 160 } = {}) {
+  if (value === undefined || value === null || value === '') {
+    if (!required) {
+      return '';
+    }
+
+    throw new RegistryError(`Missing required field: ${fieldName}`, {
+      code: 'MISSING_REQUIRED_FIELD',
+      details: { fieldName },
+    });
+  }
+
+  const text = String(value).trim();
+
+  if (!text || text.length > maxLength || /[\r\n]/.test(text) || /password|secret|credential/i.test(text)) {
+    throw new RegistryError(`${fieldName} must be a short non-secret single-line value`, {
+      code: 'INVALID_AGENT_PAYLOAD',
+      details: { fieldName },
+    });
+  }
+
+  return text;
 }
 
 function assertRecoveryRecommendationSupported(cluster) {
@@ -1602,11 +2096,12 @@ function getRoute(method, pathname) {
     return null;
   }
 
-  const metricsMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/(metrics|workloads|backup-freshness|restore-readiness|topology)$/);
+  const metricsMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/(status|metrics|workloads|backup-freshness|restore-readiness|topology)$/);
 
   if (metricsMatch) {
     const [, clusterId, action] = metricsMatch;
     const handlers = {
+      status: ({ params }) => getClusterStatus(params.clusterId),
       metrics: getClusterMetrics,
       workloads: getWorkloadHealth,
       'backup-freshness': getBackupFreshness,

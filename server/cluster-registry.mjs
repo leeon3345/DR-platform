@@ -5,8 +5,8 @@ import { sshDefaults } from './lab-config.mjs';
 
 const defaultRegistryPath = fileURLToPath(new URL('./registry/clusters.json', import.meta.url));
 const registryPath = process.env.DR_CLUSTER_REGISTRY_PATH || defaultRegistryPath;
-const supportedKinds = new Set(['cloud-k8s', 'edge-k3s']);
-const supportedAccessModes = new Set(['kubectl', 'k3s']);
+const supportedKinds = new Set(['cloud-k8s', 'edge-k3s', 'user-k8s']);
+const supportedAccessModes = new Set(['kubectl', 'k3s', 'agent']);
 const idPattern = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const nodeNamePattern = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
 
@@ -71,7 +71,7 @@ export async function deleteClusterProfile(clusterId) {
 }
 
 export function toPublicCluster(profile) {
-  return {
+  const publicCluster = {
     id: profile.id,
     displayName: profile.displayName,
     kind: profile.kind,
@@ -80,17 +80,46 @@ export function toPublicCluster(profile) {
     nodeName: profile.nodeName,
     nodeIp: profile.nodeIp,
     sshProfileRef: profile.sshProfileRef,
-    ssh: {
+    ssh: profile.ssh ? {
       host: profile.ssh.host,
       user: profile.ssh.user,
       port: profile.ssh.port,
-    },
+    } : null,
     kubernetes: profile.kubernetes,
     capabilities: profile.capabilities,
   };
+
+  if (profile.agent) {
+    publicCluster.agent = toPublicAgentState(profile.agent);
+  }
+
+  return publicCluster;
 }
 
 export function toRuntimeCluster(profile) {
+  if (profile.kubernetes.accessMode === 'agent') {
+    return {
+      ...profile,
+      commands: {
+        kubectl: null,
+        nodeStatus: profile.capabilities.nodeStatus ? 'agent' : null,
+        veleroLocation: null,
+        backups: profile.capabilities.backupHistory ? 'agent' : null,
+        backupCreate: null,
+        backupStatus: null,
+        restorePreview: null,
+        restoreExecute: profile.capabilities.restoreExecute ? 'agent' : null,
+        restoreStatus: profile.capabilities.restoreStatus ? 'agent' : null,
+        workloads: profile.capabilities.workloads ? 'agent' : null,
+        metrics: profile.capabilities.metrics ? 'agent' : null,
+        backupFreshness: profile.capabilities.backupFreshness ? 'agent' : null,
+        restoreReadiness: profile.capabilities.restoreReadiness ? 'agent' : null,
+        topology: profile.capabilities.topology ? 'agent' : null,
+        minioService: null,
+      },
+    };
+  }
+
   const commandPrefix = profile.kubernetes.accessMode === 'k3s'
     ? 'sudo -S -p "sudo password:" k3s kubectl'
     : 'kubectl';
@@ -235,7 +264,11 @@ function normalizeClusterProfile(input, idOverride = null) {
     });
   }
 
-  if ((kind === 'cloud-k8s' && accessMode !== 'kubectl') || (kind === 'edge-k3s' && accessMode !== 'k3s')) {
+  if (
+    (kind === 'cloud-k8s' && accessMode !== 'kubectl')
+    || (kind === 'edge-k3s' && accessMode !== 'k3s')
+    || (kind === 'user-k8s' && accessMode !== 'agent')
+  ) {
     throw new RegistryError('Cluster kind and Kubernetes access mode do not match a supported lab profile', {
       code: 'INVALID_KIND_ACCESS_MODE',
       details: { kind, accessMode },
@@ -249,27 +282,35 @@ function normalizeClusterProfile(input, idOverride = null) {
     });
   }
 
-  return {
+  const normalized = {
     id,
     displayName,
     kind,
-    provider: normalizeOptionalString(input.provider, 'Lab'),
-    environment: normalizeOptionalString(input.environment, kind === 'cloud-k8s' ? 'Cloud K8s primary' : 'Edge K3s recovery'),
+    provider: normalizeOptionalString(input.provider, kind === 'user-k8s' ? 'User Cluster' : 'Lab'),
+    environment: normalizeOptionalString(input.environment, defaultEnvironment(kind)),
     nodeName,
     nodeIp,
-    sshProfileRef: normalizeOptionalString(input.sshProfileRef, 'local-vbox-nat'),
-    ssh: normalizeSshProfile(input.ssh || {}),
+    sshProfileRef: accessMode === 'agent' ? null : normalizeOptionalString(input.sshProfileRef, 'local-vbox-nat'),
+    ssh: accessMode === 'agent' ? null : normalizeSshProfile(input.ssh || {}),
     kubernetes: {
       accessMode,
       sudo: Boolean(input.kubernetes?.sudo || accessMode === 'k3s'),
     },
     capabilities: normalizeCapabilities(kind, input.capabilities || {}),
   };
+
+  if (kind === 'user-k8s') {
+    normalized.agent = normalizeAgentState(input.agent || {});
+  }
+
+  return normalized;
 }
 
 function normalizeCapabilities(kind, capabilities) {
-  const defaults = kind === 'cloud-k8s'
-    ? {
+  let defaults;
+
+  if (kind === 'cloud-k8s') {
+    defaults = {
         nodeStatus: true,
         velero: true,
         backupHistory: true,
@@ -284,8 +325,9 @@ function normalizeCapabilities(kind, capabilities) {
         restoreReadiness: false,
         topology: true,
         minio: false,
-      }
-    : {
+      };
+  } else if (kind === 'edge-k3s') {
+    defaults = {
         nodeStatus: true,
         velero: false,
         backupHistory: false,
@@ -301,6 +343,24 @@ function normalizeCapabilities(kind, capabilities) {
         topology: true,
         minio: true,
       };
+  } else {
+    defaults = {
+      nodeStatus: true,
+      velero: true,
+      backupHistory: true,
+      backupCreate: false,
+      backupStatus: false,
+      restorePreview: false,
+      restoreExecute: true,
+      restoreStatus: true,
+      workloads: true,
+      metrics: true,
+      backupFreshness: true,
+      restoreReadiness: true,
+      topology: true,
+      minio: false,
+    };
+  }
 
   return {
     nodeStatus: Boolean(capabilities.nodeStatus ?? defaults.nodeStatus),
@@ -329,7 +389,23 @@ function normalizeSshProfile(ssh) {
 }
 
 function defaultAccessMode(kind) {
+  if (kind === 'user-k8s') {
+    return 'agent';
+  }
+
   return kind === 'edge-k3s' ? 'k3s' : 'kubectl';
+}
+
+function defaultEnvironment(kind) {
+  if (kind === 'cloud-k8s') {
+    return 'Cloud K8s primary';
+  }
+
+  if (kind === 'edge-k3s') {
+    return 'Edge K3s recovery';
+  }
+
+  return 'External user cluster';
 }
 
 function normalizeString(value, fieldName) {
@@ -366,6 +442,92 @@ function normalizePort(value) {
   }
 
   return port;
+}
+
+function normalizeAgentState(agent) {
+  return {
+    agentAuthHash: normalizeOptionalString(agent.agentAuthHash, ''),
+    registeredAt: normalizeOptionalTimestamp(agent.registeredAt),
+    lastHeartbeatAt: normalizeOptionalTimestamp(agent.lastHeartbeatAt),
+    lastCollectedAt: normalizeOptionalTimestamp(agent.lastCollectedAt),
+    state: normalizeAgentReportedState(agent.state || {}),
+    restoreStatuses: normalizeAgentRestoreStatuses(agent.restoreStatuses || {}),
+  };
+}
+
+function normalizeAgentReportedState(state) {
+  const nodes = Array.isArray(state.nodes) ? state.nodes.slice(0, 100).map((node) => ({
+    name: normalizeOptionalString(node?.name, 'unknown'),
+    status: normalizeOptionalString(node?.status, 'Unknown'),
+    version: normalizeOptionalString(node?.version, ''),
+  })) : [];
+  const workloads = state.workloads && typeof state.workloads === 'object' && !Array.isArray(state.workloads)
+    ? state.workloads
+    : {};
+  const namespaceValues = Array.isArray(workloads.namespaces) ? workloads.namespaces : [];
+  const backups = Array.isArray(state.backups) ? state.backups.slice(0, 100).map((backup) => ({
+    name: normalizeOptionalString(backup?.name, ''),
+    phase: normalizeOptionalString(backup?.phase, 'Unknown'),
+    timestamp: normalizeOptionalTimestamp(backup?.timestamp),
+  })).filter((backup) => backup.name) : [];
+
+  return {
+    nodes,
+    workloads: {
+      runningPods: normalizeNonNegativeInteger(workloads.runningPods),
+      pendingPods: normalizeNonNegativeInteger(workloads.pendingPods),
+      failedPods: normalizeNonNegativeInteger(workloads.failedPods),
+      namespaces: namespaceValues.map((namespace) => normalizeOptionalString(namespace, '')).filter(Boolean).slice(0, 100),
+    },
+    backups,
+  };
+}
+
+function normalizeAgentRestoreStatuses(statuses) {
+  if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(statuses).slice(0, 100).map(([operationId, status]) => [
+      normalizeOptionalString(operationId, ''),
+      {
+        operationId: normalizeOptionalString(status?.operationId, operationId),
+        restoreName: normalizeOptionalString(status?.restoreName, ''),
+        backupName: normalizeOptionalString(status?.backupName, ''),
+        phase: normalizeOptionalString(status?.phase, 'Unknown'),
+        message: normalizeOptionalString(status?.message, ''),
+        updatedAt: normalizeOptionalTimestamp(status?.updatedAt),
+      },
+    ]).filter(([operationId]) => operationId),
+  );
+}
+
+function normalizeOptionalTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeNonNegativeInteger(value) {
+  const number = Number.parseInt(value ?? 0, 10);
+
+  return Number.isInteger(number) && number > 0 ? number : 0;
+}
+
+function toPublicAgentState(agent) {
+  return {
+    registeredAt: agent.registeredAt,
+    lastHeartbeatAt: agent.lastHeartbeatAt,
+    lastCollectedAt: agent.lastCollectedAt,
+    state: agent.state,
+    restoreStatuses: agent.restoreStatuses,
+    connected: agent.lastHeartbeatAt ? Date.now() - new Date(agent.lastHeartbeatAt).getTime() <= 90000 : false,
+  };
 }
 
 function assertNoSecretFields(value, path = '') {

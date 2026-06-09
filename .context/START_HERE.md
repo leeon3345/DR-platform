@@ -7,7 +7,7 @@ Use this file as the short boot note for a new AI chat.
 Default new-chat prompt:
 
 ```text
-Read .context/START_HERE.md and task10.md only.
+Read .context/START_HERE.md and task12.md only.
 Do not open other files unless I ask.
 
 If you need more context, ask first and name the exact file.
@@ -47,21 +47,22 @@ Main product direction:
 - TASK-08: User-cluster test microservices deployed, DR labels applied, node-exporter confirmed, Velero installed through zrok-exposed Edge MinIO, and smoke backup verified.
 - TASK-09: Prometheus Alertmanager webhook receiver, sanitized in-memory event history APIs, and dashboard incident polling added. User-cluster alert rule/agent installation is deferred to the next task.
 - TASK-10: React Flow topology now responds to TASK-09 alert events, with API-polled node states, alert-aware edge animation, recovered badges, and live Incident Stream updates.
+- TASK-11: `dr-agent` implemented as a Node.js Pod agent with registry-backed heartbeat ingestion, token-hash validation, allowlisted Velero restore command polling, Docker image packaging, Helm install chart, and dashboard cluster-list agent state reflection.
 
 ## Current Next Task
 
 ```text
-TASK-11 should be drafted.
+TASK-12 should be drafted.
 ```
 
 Likely next focus:
-- Build a user-installable monitoring/DR agent or install bundle for user clusters.
-- Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets.
+- Add an operator flow to generate/copy a one-command `dr-agent` Helm install command.
+- Add a platform-side pending restore command creator tied to approved recommendations.
+- Add restore progress tracking and dashboard status for agent-executed restores.
+- Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets if they should live beside the agent chart.
 - Keep user-cluster credentials and tokens out of Git-tracked files.
 - Keep alert ingestion decoupled from restore execution.
 - Preserve the TASK-09 backend receiver and dashboard incident polling behavior.
-- Later connect approved recommendations to the existing TASK-05 restore preview/execution flow.
-- Later add restore progress tracking per approved workload.
 - Keep all credential handling and CLI/SSH execution backend-only.
 - Preserve TASK-07 deterministic scoring and server-only LLM explanation behavior.
 - Account for the TASK-08 user-cluster workload labels and zrok-backed Velero storage path.
@@ -85,6 +86,14 @@ server/lab-config.mjs
 server/cluster-registry.mjs
 server/registry/clusters.json
 server/registry/recovery-policy.json (local, Git-ignored)
+```
+
+Agent/install bundle:
+
+```text
+agent/dr-agent.mjs
+agent/Dockerfile
+helm/dr-agent
 ```
 
 Project/task docs:
@@ -183,6 +192,10 @@ GET /api/storage/minio/status
 POST /api/events/alert
 GET /api/events/latest
 GET /api/events/history
+POST /api/agent/register
+POST /api/agent/heartbeat
+GET /api/agent/commands?token=<agent-token>&clusterId=<cluster-id>
+POST /api/agent/status
 ```
 
 ## Rules

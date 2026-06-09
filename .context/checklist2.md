@@ -38,3 +38,49 @@ TASK-10 verified values:
 - Browser verification URL: `http://127.0.0.1:5173/`.
 - Browser console verification: no error or warning logs observed.
 - Backend API was not started during browser verification, so safe API warning UI was expected.
+
+## TASK-11: Implement dr-agent
+
+Status: Done
+
+- [x] Implement `dr-agent` Node.js script to collect node, pod, and Velero backup state.
+- [x] Package `dr-agent` as a Docker image.
+- [x] Include `kubectl` and `velero` binaries in the agent image.
+- [x] Add `POST /api/agent/register`.
+- [x] Add `POST /api/agent/heartbeat`.
+- [x] Add `GET /api/agent/commands`.
+- [x] Add `POST /api/agent/status`.
+- [x] Add `user-k8s` registry kind with agent access mode.
+- [x] Store agent-reported state in the TASK-04 registry.
+- [x] Store agent token hashes only; do not store plaintext tokens.
+- [x] Validate token and clusterId on every agent request.
+- [x] Return structured `INVALID_TOKEN` for token mismatch.
+- [x] Add allowlisted Velero restore command execution in the agent.
+- [x] Keep alert ingestion decoupled from restore execution.
+- [x] Add Helm chart under `helm/dr-agent`.
+- [x] Store agent token in a Kubernetes Secret template instead of committed values.
+- [x] Add RBAC for node/pod reads and Velero backup/restore access.
+- [x] Reflect agent-reported cluster state in the dashboard cluster list.
+- [x] Verify backend syntax succeeds.
+- [x] Verify frontend build succeeds.
+- [x] Verify Docker image builds.
+
+TASK-11 verified values:
+- Agent package: `agent/dr-agent.mjs`.
+- Agent image definition: `agent/Dockerfile`.
+- Helm chart: `helm/dr-agent`.
+- API startup verification port: `http://127.0.0.1:3998`.
+- Fake verification cluster: `task11-agent-test`.
+- Fake verification token: `usr_task11test`; removed after testing and not stored in final registry.
+- `POST /api/agent/register`: created a `user-k8s` agent profile and returned public cluster data without exposing `agentAuthHash`.
+- `POST /api/agent/heartbeat`: accepted node, workload, and backup state.
+- `GET /api/agent/commands`: returned an empty list when no restore command was pending.
+- `POST /api/agent/status`: accepted restore status for `restore-test-001`.
+- Invalid token heartbeat returned structured `INVALID_TOKEN`.
+- `GET /api/clusters/task11-agent-test/status`: returned `Ready` during verification.
+- `GET /api/clusters/task11-agent-test/metrics`: returned agent-backed workload, backup freshness, and restore readiness data during verification.
+- `GET /api/clusters/task11-agent-test/restores/restore-test-001`: returned the agent-reported restore status during verification.
+- Syntax verification: `node --check server/server.mjs`, `node --check server/cluster-registry.mjs`, and `node --check agent/dr-agent.mjs`.
+- Build verification: `npm run build`.
+- Docker verification: `docker build -t dr-agent:latest ./agent`.
+- Helm lint was not run because `helm` is not installed on this machine.

@@ -1018,6 +1018,51 @@ function metricTone(percent) {
   return "bg-red-500";
 }
 
+const metricStateStyles = {
+  healthy: {
+    dot: "bg-emerald-500",
+    bar: "bg-emerald-500",
+    value: "text-emerald-700",
+    track: "bg-emerald-50 ring-emerald-100",
+  },
+  warning: {
+    dot: "bg-amber-400",
+    bar: "bg-amber-400",
+    value: "text-amber-800",
+    track: "bg-amber-50 ring-amber-100",
+  },
+  error: {
+    dot: "bg-red-500",
+    bar: "bg-red-500",
+    value: "text-red-700",
+    track: "bg-red-50 ring-red-100",
+  },
+  empty: {
+    dot: "bg-slate-300",
+    bar: "bg-slate-300",
+    value: "text-slate-500",
+    track: "bg-slate-50 ring-slate-200",
+  },
+  loading: {
+    dot: "bg-sky-500",
+    bar: "bg-sky-500",
+    value: "text-sky-700",
+    track: "bg-sky-50 ring-sky-100",
+  },
+};
+
+function metricStateFromPercent(percent) {
+  if (percent >= 80) {
+    return "healthy";
+  }
+
+  if (percent >= 50) {
+    return "warning";
+  }
+
+  return "error";
+}
+
 function formatMetricAge(minutes) {
   if (minutes === null || minutes === undefined) {
     return "No data";
@@ -1045,100 +1090,185 @@ function buildMetricGroups(apiResults, apiLoading) {
   const backupCount = firstValue(freshness, ["backupFreshness.backupCount"], 0);
   const completedBackups = firstValue(freshness, ["backupFreshness.completedBackups"], 0);
   const readinessScore = firstValue(readiness, ["restoreReadiness.score"], 0);
+  const cloudMetricsError = getApiError(apiResults, "cloudMetrics");
+  const edgeMetricsError = getApiError(apiResults, "edgeMetrics");
+  const cloudWorkloadsError = getApiError(apiResults, "cloudWorkloads");
+  const edgeWorkloadsError = getApiError(apiResults, "edgeWorkloads");
+  const freshnessError = getApiError(apiResults, "cloudBackupFreshness");
+  const readinessError = getApiError(apiResults, "edgeRestoreReadiness");
 
   if (apiLoading) {
     return [
       {
         title: "Cluster Health",
         rows: [
-          { label: "Cloud K8s", value: "Loading", percent: 24, tone: "bg-sky-500" },
-          { label: "Edge K3s", value: "Loading", percent: 24, tone: "bg-sky-500" },
+          { label: "Cloud K8s", value: "Syncing", detail: "Waiting for node status", percent: 36, state: "loading" },
+          { label: "Edge K3s", value: "Syncing", detail: "Waiting for node status", percent: 36, state: "loading" },
         ],
       },
       {
         title: "Workload Health",
         rows: [
-          { label: "Cloud pods", value: "Loading", percent: 24, tone: "bg-sky-500" },
-          { label: "Edge pods", value: "Loading", percent: 24, tone: "bg-sky-500" },
+          { label: "Cloud pods", value: "Syncing", detail: "Collecting pod totals", percent: 36, state: "loading" },
+          { label: "Edge pods", value: "Syncing", detail: "Collecting pod totals", percent: 36, state: "loading" },
         ],
       },
       {
         title: "Backup Freshness",
-        rows: [{ label: "Latest backup", value: "Loading", percent: 24, tone: "bg-sky-500" }],
+        rows: [{ label: "Latest backup", value: "Syncing", detail: "Checking Velero history", percent: 36, state: "loading" }],
       },
       {
         title: "Restore Readiness",
-        rows: [{ label: "Edge target", value: "Loading", percent: 24, tone: "bg-sky-500" }],
+        rows: [{ label: "Edge target", value: "Syncing", detail: "Checking target readiness", percent: 36, state: "loading" }],
       },
     ];
   }
+
+  const cloudReady = firstValue(cloudMetrics, ["node.ready"], false);
+  const edgeReady = firstValue(edgeMetrics, ["node.ready"], false);
+  const cloudPodPercent = ratioPercent(cloudRunningPods, cloudTotalPods);
+  const edgePodPercent = ratioPercent(edgeRunningPods, edgeTotalPods);
+  const latestBackupPercent = latestAge === null ? 0 : clampPercent(100 - Math.max(0, latestAge - 15));
+  const completedBackupPercent = ratioPercent(completedBackups, backupCount);
 
   return [
     {
       title: "Cluster Health",
       rows: [
-        {
+        cloudMetricsError ? {
           label: "Cloud K8s",
-          value: firstValue(cloudMetrics, ["node.healthStatus"], getApiError(apiResults, "cloudMetrics") ? "Error" : "No data"),
-          percent: firstValue(cloudMetrics, ["node.ready"], false) ? 100 : 0,
-          tone: firstValue(cloudMetrics, ["node.ready"], false) ? "bg-emerald-500" : "bg-red-500",
+          value: "API error",
+          detail: "Metric endpoint did not return a usable response",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Cloud K8s",
+          value: firstValue(cloudMetrics, ["node.healthStatus"], "No signal"),
+          detail: firstValue(cloudMetrics, ["node.nodeName"], "No node heartbeat received"),
+          percent: cloudReady ? 100 : 0,
+          percentLabel: cloudReady ? "Ready" : "Not ready",
+          state: cloudReady ? "healthy" : "warning",
         },
-        {
+        edgeMetricsError ? {
           label: "Edge K3s",
-          value: firstValue(edgeMetrics, ["node.healthStatus"], getApiError(apiResults, "edgeMetrics") ? "Error" : "No data"),
-          percent: firstValue(edgeMetrics, ["node.ready"], false) ? 100 : 0,
-          tone: firstValue(edgeMetrics, ["node.ready"], false) ? "bg-emerald-500" : "bg-red-500",
+          value: "API error",
+          detail: "Metric endpoint did not return a usable response",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Edge K3s",
+          value: firstValue(edgeMetrics, ["node.healthStatus"], "No signal"),
+          detail: firstValue(edgeMetrics, ["node.nodeName"], "No node heartbeat received"),
+          percent: edgeReady ? 100 : 0,
+          percentLabel: edgeReady ? "Ready" : "Not ready",
+          state: edgeReady ? "healthy" : "warning",
         },
       ],
     },
     {
       title: "Workload Health",
       rows: [
-        {
+        cloudWorkloadsError ? {
           label: "Cloud pods",
-          value: `${cloudRunningPods}/${cloudTotalPods} running`,
-          percent: ratioPercent(cloudRunningPods, cloudTotalPods),
-          tone: metricTone(ratioPercent(cloudRunningPods, cloudTotalPods)),
+          value: "API error",
+          detail: "Pod metric endpoint is unavailable",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Cloud pods",
+          value: cloudTotalPods ? `${cloudRunningPods}/${cloudTotalPods} running` : "No pod signal",
+          detail: cloudTotalPods ? `${cloudTotalPods - cloudRunningPods} pods not running` : "No workload metrics received",
+          percent: cloudTotalPods ? cloudPodPercent : 100,
+          percentLabel: cloudTotalPods ? `${cloudPodPercent}%` : "No data",
+          state: cloudTotalPods ? metricStateFromPercent(cloudPodPercent) : "empty",
         },
-        {
+        edgeWorkloadsError ? {
           label: "Edge pods",
-          value: `${edgeRunningPods}/${edgeTotalPods} running`,
-          percent: ratioPercent(edgeRunningPods, edgeTotalPods),
-          tone: metricTone(ratioPercent(edgeRunningPods, edgeTotalPods)),
+          value: "API error",
+          detail: "Pod metric endpoint is unavailable",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Edge pods",
+          value: edgeTotalPods ? `${edgeRunningPods}/${edgeTotalPods} running` : "No pod signal",
+          detail: edgeTotalPods ? `${edgeTotalPods - edgeRunningPods} pods not running` : "No workload metrics received",
+          percent: edgeTotalPods ? edgePodPercent : 100,
+          percentLabel: edgeTotalPods ? `${edgePodPercent}%` : "No data",
+          state: edgeTotalPods ? metricStateFromPercent(edgePodPercent) : "empty",
         },
       ],
     },
     {
       title: "Backup Freshness",
       rows: [
-        {
+        freshnessError ? {
           label: "Latest backup age",
-          value: formatMetricAge(latestAge),
-          percent: latestAge === null ? 0 : clampPercent(100 - Math.max(0, latestAge - 15)),
-          tone: metricTone(latestAge === null ? 0 : 100 - Math.max(0, latestAge - 15)),
+          value: "API error",
+          detail: "Backup freshness endpoint is unavailable",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Latest backup age",
+          value: latestAge === null ? "No backup signal" : formatMetricAge(latestAge),
+          detail: latestAge === null ? "No completed backup reported" : firstValue(freshness, ["backupFreshness.latestBackupName"], "Latest completed backup"),
+          percent: latestAge === null ? 100 : latestBackupPercent,
+          percentLabel: latestAge === null ? "No data" : `${latestBackupPercent}%`,
+          state: latestAge === null ? "empty" : metricStateFromPercent(latestBackupPercent),
         },
-        {
+        freshnessError ? {
           label: "Completed backups",
-          value: `${completedBackups}/${backupCount}`,
-          percent: ratioPercent(completedBackups, backupCount),
-          tone: metricTone(ratioPercent(completedBackups, backupCount)),
+          value: "API error",
+          detail: "Backup history could not be checked",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Completed backups",
+          value: backupCount ? `${completedBackups}/${backupCount}` : "No backups",
+          detail: backupCount ? `${backupCount - completedBackups} backups need attention` : "No backup history reported",
+          percent: backupCount ? completedBackupPercent : 100,
+          percentLabel: backupCount ? `${completedBackupPercent}%` : "No data",
+          state: backupCount ? metricStateFromPercent(completedBackupPercent) : "empty",
         },
       ],
     },
     {
       title: "Restore Readiness",
       rows: [
-        {
+        readinessError ? {
           label: "Edge target",
-          value: firstValue(readiness, ["restoreReadiness.status"], getApiError(apiResults, "edgeRestoreReadiness") ? "Error" : "No data"),
-          percent: clampPercent(readinessScore),
-          tone: metricTone(readinessScore),
+          value: "API error",
+          detail: "Restore readiness endpoint is unavailable",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
+          label: "Edge target",
+          value: firstValue(readiness, ["restoreReadiness.status"], "No signal"),
+          detail: firstValue(readiness, ["restoreReadiness.checks.0.message"], "No readiness check received"),
+          percent: readiness ? clampPercent(readinessScore) : 100,
+          percentLabel: readiness ? `${clampPercent(readinessScore)}%` : "No data",
+          state: readiness ? metricStateFromPercent(readinessScore) : "empty",
         },
-        {
+        readinessError ? {
+          label: "Storage path",
+          value: "API error",
+          detail: "Storage reachability could not be checked",
+          percent: 100,
+          percentLabel: "Needs check",
+          state: "error",
+        } : {
           label: "Storage path",
           value: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? "Reachable" : "Unavailable",
-          percent: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? 100 : 0,
-          tone: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? "bg-emerald-500" : "bg-red-500",
+          detail: firstValue(readiness, ["restoreReadiness.checks.2.message"], "Backup storage check"),
+          percent: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? 100 : 100,
+          percentLabel: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? "Ready" : "Blocked",
+          state: firstValue(readiness, ["restoreReadiness.storageReachable"], false) ? "healthy" : "error",
         },
       ],
     },
@@ -1170,6 +1300,57 @@ function deriveOverallStatus(apiResults, apiLoading) {
   }
 
   return "Protected";
+}
+
+function deriveAgentDashboardStatus(cluster) {
+  const connected = firstValue(cluster, ["agent.connected"], false);
+  const nodes = asArray(firstValue(cluster, ["agent.state"], null), ["nodes"]);
+  const failedPods = firstValue(cluster, ["agent.state.workloads.failedPods"], 0);
+
+  if (!connected) {
+    return "Warning";
+  }
+
+  if (nodes.some((node) => firstValue(node, ["status"], "Unknown") !== "Ready")) {
+    return "Incident";
+  }
+
+  if (toNumber(failedPods) > 0) {
+    return "Warning";
+  }
+
+  return "Protected";
+}
+
+function buildAgentStreamRows(cluster) {
+  const agent = firstValue(cluster, ["agent"], null);
+  const nodes = asArray(firstValue(cluster, ["agent.state"], null), ["nodes"]);
+  const backups = asArray(firstValue(cluster, ["agent.state"], null), ["backups"]).slice(0, 2);
+  const rows = [];
+
+  if (agent?.lastHeartbeatAt) {
+    rows.push([formatTime(agent.lastHeartbeatAt), `${cluster.name} agent heartbeat received`, "bg-emerald-500"]);
+  }
+
+  nodes.slice(0, 2).forEach((node) => {
+    const status = firstValue(node, ["status"], "Unknown");
+    rows.push([
+      "Agent",
+      `${firstValue(node, ["name"], "node")} · ${status}`,
+      status === "Ready" ? "bg-emerald-500" : "bg-amber-500",
+    ]);
+  });
+
+  backups.forEach((backup) => {
+    const phase = firstValue(backup, ["phase"], "Unknown");
+    rows.push([
+      formatTime(firstValue(backup, ["timestamp"], null)),
+      `${firstValue(backup, ["name"], "backup")} · ${phase}`,
+      phase === "Completed" ? "bg-emerald-500" : "bg-amber-500",
+    ]);
+  });
+
+  return rows;
 }
 
 function buildNodeHealthOverride({ payload, loading, error, fallbackName, loadingDetail, errorDetail, safeDetail }) {
@@ -1312,7 +1493,6 @@ function buildLiveStream(apiResults, apiLoading, fallbackStream, alertEvents = [
 function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
   const apiClusters = asArray(getApiResult(apiResults, "clusters"), ["clusters", "items"]);
   const overallStatus = deriveOverallStatus(apiResults, apiLoading);
-  const statusMeta = getStatusMeta(overallStatus);
   const safeErrors = endpointErrors(apiResults);
   const validationIssues = validationErrors(apiResults);
   const liveNodeOverrides = {
@@ -1357,6 +1537,9 @@ function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
   const sourceClusters = apiClusters.length
     ? apiClusters.map((cluster, index) => {
         const template = clusterScenarios[index] ?? clusterScenarios[0];
+        const isAgentCluster = firstValue(cluster, ["kind"], "") === "user-k8s";
+        const agentBackups = asArray(firstValue(cluster, ["agent.state"], null), ["backups"]);
+        const latestBackup = agentBackups[0];
 
         return {
           ...template,
@@ -1365,24 +1548,43 @@ function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
           provider: firstValue(cluster, ["provider", "kind", "clusterKind", "type", "distribution"], template.provider),
           region: firstValue(cluster, ["region", "location", "nodeIp"], template.region),
           environment: firstValue(cluster, ["environment", "env"], template.environment),
+          rto: isAgentCluster ? "Agent" : template.rto,
+          rpo: isAgentCluster ? firstValue(latestBackup, ["phase"], "No backup") : template.rpo,
+          policy: isAgentCluster ? "Agent heartbeat · Velero command polling" : template.policy,
+          agent: cluster.agent || null,
+          isAgentCluster,
         };
       })
     : clusterScenarios;
 
-  return sourceClusters.map((cluster) => ({
-    ...cluster,
-    ...statusMeta,
-    status: overallStatus,
-    updatedAt: apiLoading ? "Loading live API data" : safeErrors.length || validationIssues.length ? "Live API partial warning" : "Live API synced",
-    description: apiLoading
-      ? "TASK-02 백엔드 API에서 Cloud, Edge, MinIO, Velero 상태를 불러오는 중입니다."
-      : "Registry-backed API 응답을 기반으로 Cloud K8s, Edge K3s, MinIO, Velero 상태를 표시합니다.",
-    stream: buildLiveStream(apiResults, apiLoading, cluster.stream, alertEvents),
-    nodeOverrides: {
-      ...cluster.nodeOverrides,
-      ...liveNodeOverrides,
-    },
-  }));
+  return sourceClusters.map((cluster) => {
+    const clusterStatus = cluster.isAgentCluster ? deriveAgentDashboardStatus(cluster) : overallStatus;
+    const statusMeta = getStatusMeta(clusterStatus);
+    const agentStream = cluster.isAgentCluster ? buildAgentStreamRows(cluster) : [];
+
+    return {
+      ...cluster,
+      ...statusMeta,
+      status: clusterStatus,
+      updatedAt: apiLoading
+        ? "Loading live API data"
+        : cluster.isAgentCluster
+          ? firstValue(cluster, ["agent.lastHeartbeatAt"], "Waiting for agent heartbeat")
+          : safeErrors.length || validationIssues.length ? "Live API partial warning" : "Live API synced",
+      description: apiLoading
+        ? "TASK-02 백엔드 API에서 Cloud, Edge, MinIO, Velero 상태를 불러오는 중입니다."
+        : cluster.isAgentCluster
+          ? "dr-agent가 push한 heartbeat를 기반으로 외부 사용자 클러스터 상태를 표시합니다."
+          : "Registry-backed API 응답을 기반으로 Cloud K8s, Edge K3s, MinIO, Velero 상태를 표시합니다.",
+      stream: cluster.isAgentCluster
+        ? [...buildAlertEventRows(alertEvents), ...agentStream, ...cluster.stream].slice(0, 5)
+        : buildLiveStream(apiResults, apiLoading, cluster.stream, alertEvents),
+      nodeOverrides: {
+        ...cluster.nodeOverrides,
+        ...liveNodeOverrides,
+      },
+    };
+  });
 }
 
 function Icon({ name, className = "h-5 w-5" }) {
@@ -1523,23 +1725,38 @@ function MetricGraphPanel({ group }) {
       </div>
 
       <div className="mt-4 grid gap-4">
-        {group.rows.map((row) => (
-          <div key={`${group.title}-${row.label}`}>
-            <div className="mb-2 flex items-center justify-between gap-3 text-xs">
-              <span className="font-bold text-slate-600">{row.label}</span>
-              <span className="font-black text-slate-900">{row.value}</span>
+        {group.rows.map((row) => {
+          const style = metricStateStyles[row.state] ?? metricStateStyles[metricStateFromPercent(clampPercent(row.percent))];
+          const percent = clampPercent(row.percent);
+
+          return (
+            <div key={`${group.title}-${row.label}`} className={`rounded-md px-3 py-3 ring-1 ${style.track}`}>
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${style.dot}`} />
+                    <span className="font-black text-slate-700">{row.label}</span>
+                  </div>
+                  {row.detail && (
+                    <div className="mt-1 truncate text-[11px] font-semibold text-slate-500">
+                      {row.detail}
+                    </div>
+                  )}
+                </div>
+                <span className={`shrink-0 text-sm font-black ${style.value}`}>{row.value}</span>
+              </div>
+              <div className="h-2.5 overflow-hidden rounded-full bg-white/80 ring-1 ring-black/5">
+                <div
+                  className={`h-full rounded-full ${style.bar} transition-all duration-500`}
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+              <div className="mt-1 text-right text-[11px] font-black text-slate-400">
+                {row.percentLabel ?? `${percent}%`}
+              </div>
             </div>
-            <div className="h-3 overflow-hidden rounded-full bg-slate-100 ring-1 ring-slate-200">
-              <div
-                className={`h-full rounded-full ${row.tone} transition-all duration-500`}
-                style={{ width: `${clampPercent(row.percent)}%` }}
-              />
-            </div>
-            <div className="mt-1 text-right text-[11px] font-bold text-slate-400">
-              {clampPercent(row.percent)}%
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
