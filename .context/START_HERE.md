@@ -7,7 +7,7 @@ Use this file as the short boot note for a new AI chat.
 Default new-chat prompt:
 
 ```text
-Read .context/START_HERE.md and .context/task7.md only.
+Read .context/START_HERE.md and task9.md only.
 Do not open other files unless I ask.
 
 If you need more context, ask first and name the exact file.
@@ -44,19 +44,26 @@ Main product direction:
 - TASK-05: Backup creation, restore preview, restore execution, and status APIs added.
 - TASK-06: Metric collection APIs and dashboard graph visualizations added.
 - TASK-07: Policy-based recovery priority recommendations, server-side LLM/fallback explanations, and dashboard approval panel added.
+- TASK-08: User-cluster test microservices deployed, DR labels applied, node-exporter confirmed, Velero installed through zrok-exposed Edge MinIO, and smoke backup verified.
+- TASK-09: Prometheus Alertmanager webhook receiver, sanitized in-memory event history APIs, and dashboard incident polling added. User-cluster alert rule/agent installation is deferred to the next task.
 
 ## Current Next Task
 
 ```text
-.context/task8.md
+TASK-10 should be drafted.
 ```
 
-TASK-08 should be drafted before the next implementation task.
 Likely next focus:
-- Connect approved recommendations to the existing TASK-05 restore preview/execution flow.
-- Add restore progress tracking per approved workload.
+- Build a user-installable monitoring/DR agent or install bundle for user clusters.
+- Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets.
+- Keep user-cluster credentials and tokens out of Git-tracked files.
+- Keep alert ingestion decoupled from restore execution.
+- Preserve the TASK-09 backend receiver and dashboard incident polling behavior.
+- Later connect approved recommendations to the existing TASK-05 restore preview/execution flow.
+- Later add restore progress tracking per approved workload.
 - Keep all credential handling and CLI/SSH execution backend-only.
 - Preserve TASK-07 deterministic scoring and server-only LLM explanation behavior.
+- Account for the TASK-08 user-cluster workload labels and zrok-backed Velero storage path.
 
 ## Important Files
 
@@ -84,7 +91,7 @@ Project/task docs:
 ```text
 .context/PROJECT.md
 .context/checklist.md
-.context/task7.md
+.context/task8.md
 ```
 
 ## Lab Cluster Registry
@@ -118,6 +125,7 @@ MinIO / Velero:
 
 ```text
 MinIO endpoint from k8s-master: http://10.0.2.11:30900
+User-cluster Velero endpoint through zrok: https://dr-minio.shares.zrok.io
 Velero bucket: velero-backups
 Expected BackupStorageLocation phase: Available
 ```
@@ -171,6 +179,9 @@ POST /api/clusters/cloud-primary/restores
 GET /api/clusters/edge-recovery/restores/:restoreName
 GET /api/clusters/cloud-primary/velero/location
 GET /api/storage/minio/status
+POST /api/events/alert
+GET /api/events/latest
+GET /api/events/history
 ```
 
 ## Rules

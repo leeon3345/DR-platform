@@ -12,7 +12,7 @@ import {
   getSmoothStepPath,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { approveRecoveryRecommendation, loadDashboardData } from "./api";
+import { approveRecoveryRecommendation, loadDashboardData, loadEventHistory } from "./api";
 
 const statusStyles = {
   error: {
@@ -564,6 +564,37 @@ function formatTime(value) {
   });
 }
 
+function getAlertEventDotColor(event) {
+  if (event?.status === "resolved" || event?.severity === "resolved") {
+    return "bg-emerald-500";
+  }
+
+  if (String(event?.severity || "").toLowerCase() === "critical") {
+    return "bg-red-500";
+  }
+
+  return "bg-amber-500";
+}
+
+function formatAlertEventText(event) {
+  const alertname = firstValue(event, ["alertname"], "Alertmanager alert");
+  const namespace = firstValue(event, ["namespace"], null);
+  const clusterId = firstValue(event, ["clusterId"], "user-k8s");
+  const scope = namespace || clusterId;
+  const severity = firstValue(event, ["severity"], "warning");
+  const status = firstValue(event, ["status"], "firing");
+
+  return `${alertname} · ${scope} · ${severity} · ${status}`;
+}
+
+function buildAlertEventRows(events) {
+  return events.slice(0, 5).map((event) => [
+    formatTime(firstValue(event, ["receivedAt", "startsAt"])),
+    formatAlertEventText(event),
+    getAlertEventDotColor(event),
+  ]);
+}
+
 function isReadyLike(value) {
   if (typeof value === "boolean") {
     return value;
@@ -915,9 +946,11 @@ function buildMinioOverride(apiResults, apiLoading) {
   };
 }
 
-function buildLiveStream(apiResults, apiLoading, fallbackStream) {
+function buildLiveStream(apiResults, apiLoading, fallbackStream, alertEvents = []) {
+  const alertRows = buildAlertEventRows(alertEvents);
+
   if (apiLoading) {
-    return [["Live", "Backend status APIs loading", "bg-sky-500"], ...fallbackStream.slice(0, 4)];
+    return [...alertRows, ["Live", "Backend status APIs loading", "bg-sky-500"], ...fallbackStream.slice(0, 4)];
   }
 
   const rows = [];
@@ -966,10 +999,12 @@ function buildLiveStream(apiResults, apiLoading, fallbackStream) {
     rows.push(["Validate", message, "bg-amber-500"]);
   });
 
-  return rows.length ? rows : fallbackStream;
+  const liveRows = [...alertRows, ...rows];
+
+  return liveRows.length ? liveRows : fallbackStream;
 }
 
-function buildDashboardClusters(apiResults, apiLoading) {
+function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
   const apiClusters = asArray(getApiResult(apiResults, "clusters"), ["clusters", "items"]);
   const overallStatus = deriveOverallStatus(apiResults, apiLoading);
   const statusMeta = getStatusMeta(overallStatus);
@@ -1037,7 +1072,7 @@ function buildDashboardClusters(apiResults, apiLoading) {
     description: apiLoading
       ? "TASK-02 백엔드 API에서 Cloud, Edge, MinIO, Velero 상태를 불러오는 중입니다."
       : "Registry-backed API 응답을 기반으로 Cloud K8s, Edge K3s, MinIO, Velero 상태를 표시합니다.",
-    stream: buildLiveStream(apiResults, apiLoading, cluster.stream),
+    stream: buildLiveStream(apiResults, apiLoading, cluster.stream, alertEvents),
     nodeOverrides: {
       ...cluster.nodeOverrides,
       ...liveNodeOverrides,
@@ -1390,9 +1425,11 @@ function App() {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [pendingWorkloadId, setPendingWorkloadId] = useState(null);
   const [approvalError, setApprovalError] = useState(null);
+  const [alertEvents, setAlertEvents] = useState([]);
+  const [eventPollingError, setEventPollingError] = useState(null);
   const nodeTypes = useMemo(() => ({ drNode: DisasterRecoveryNode }), []);
   const edgeTypes = useMemo(() => ({ labeled: LabeledFlowEdge }), []);
-  const dashboardClusters = useMemo(() => buildDashboardClusters(apiResults, apiLoading), [apiResults, apiLoading]);
+  const dashboardClusters = useMemo(() => buildDashboardClusters(apiResults, apiLoading, alertEvents), [apiResults, apiLoading, alertEvents]);
   const metricGroups = useMemo(() => buildMetricGroups(apiResults, apiLoading), [apiResults, apiLoading]);
   const recommendations = useMemo(() => getRecoveryRecommendations(apiResults), [apiResults]);
   const activeCluster = useMemo(
@@ -1412,7 +1449,7 @@ function App() {
   );
   const apiErrors = endpointErrors(apiResults);
   const validateErrors = validationErrors(apiResults);
-  const apiIssueCount = apiErrors.length + validateErrors.length;
+  const apiIssueCount = apiErrors.length + validateErrors.length + (eventPollingError ? 1 : 0);
   const recommendationError = getApiError(apiResults, "cloudRecommendations");
 
   useEffect(() => {
@@ -1422,6 +1459,7 @@ function App() {
     loadDashboardData({ signal: controller.signal })
       .then((results) => {
         setApiResults(results);
+        setAlertEvents(asArray(results.eventHistory?.ok ? results.eventHistory.data : null, ["events"]));
       })
       .catch((error) => {
         if (!controller.signal.aborted) {
@@ -1441,6 +1479,38 @@ function App() {
 
     return () => controller.abort();
   }, [reloadNonce]);
+
+  useEffect(() => {
+    let active = true;
+    let controller = null;
+
+    async function pollEvents() {
+      const requestController = new AbortController();
+      controller = requestController;
+
+      try {
+        const payload = await loadEventHistory({ signal: requestController.signal });
+
+        if (active) {
+          setAlertEvents(asArray(payload, ["events"]));
+          setEventPollingError(null);
+        }
+      } catch (error) {
+        if (active && !requestController.signal.aborted) {
+          setEventPollingError(error.message);
+        }
+      }
+    }
+
+    pollEvents();
+    const intervalId = window.setInterval(pollEvents, 10000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      controller?.abort();
+    };
+  }, []);
 
   async function handleApproveRecommendation(workloadId) {
     setPendingWorkloadId(workloadId);

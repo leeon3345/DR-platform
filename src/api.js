@@ -16,6 +16,8 @@ const API_PATHS = {
   edgeTopology: "/api/clusters/edge-recovery/topology",
   cloudValidation: "/api/clusters/cloud-primary/validate",
   edgeValidation: "/api/clusters/edge-recovery/validate",
+  latestEvent: "/api/events/latest",
+  eventHistory: "/api/events/history",
 };
 
 function getApiBaseUrls() {
@@ -125,6 +127,10 @@ export async function loadDashboardData({ signal } = {}) {
   );
 
   return Object.fromEntries(entries);
+}
+
+export async function loadEventHistory({ signal } = {}) {
+  return getJson(API_PATHS.eventHistory, { signal });
 }
 
 export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {

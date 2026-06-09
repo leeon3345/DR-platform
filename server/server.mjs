@@ -23,6 +23,9 @@ const labelKeyPattern = /^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\/)?[A-Za-z0-
 const labelValuePattern = /^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$/;
 const recoveryPolicyRegistryUrl = new URL('./registry/recovery-policy.json', import.meta.url);
 const recoveryPolicyRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
+const alertEventHistoryLimit = 20;
+const alertEventHistory = [];
+let alertEventSequence = 0;
 const tierWeights = {
   critical: 100,
   high: 70,
@@ -38,6 +41,9 @@ const routes = new Map([
   ['GET /api/clusters/cloud-primary/velero/location', getVeleroLocation],
   ['GET /api/clusters/cloud-primary/backups', getBackupHistory],
   ['GET /api/storage/minio/status', getMinioStatus],
+  ['POST /api/events/alert', receiveAlertEvent],
+  ['GET /api/events/latest', getLatestAlertEvent],
+  ['GET /api/events/history', getAlertEventHistory],
 ]);
 
 const server = http.createServer(async (request, response) => {
@@ -583,6 +589,35 @@ async function approveRecoveryRecommendation({ params }) {
     workloadId: namespace,
     approved: true,
     approvedAt: updatedAt,
+  };
+}
+
+async function receiveAlertEvent({ request }) {
+  const input = await readJsonBody(request);
+  const events = normalizeAlertmanagerPayload(input);
+
+  alertEventHistory.unshift(...events);
+  alertEventHistory.splice(alertEventHistoryLimit);
+
+  return {
+    statusCode: 202,
+    payload: {
+      accepted: true,
+      events,
+      latest: alertEventHistory[0] || null,
+    },
+  };
+}
+
+async function getLatestAlertEvent() {
+  return {
+    event: alertEventHistory[0] || null,
+  };
+}
+
+async function getAlertEventHistory() {
+  return {
+    events: alertEventHistory.slice(0, alertEventHistoryLimit),
   };
 }
 
@@ -1208,6 +1243,136 @@ function normalizeRestore(restore) {
     completionTimestamp: restore.status?.completionTimestamp || null,
     includedNamespaces: restore.spec?.includedNamespaces || null,
   };
+}
+
+function normalizeAlertmanagerPayload(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !Array.isArray(input.alerts) || input.alerts.length === 0) {
+    throw new RegistryError('Alertmanager webhook payload must include a non-empty alerts array', {
+      code: 'INVALID_ALERT_PAYLOAD',
+      statusCode: 400,
+      details: { fieldName: 'alerts' },
+    });
+  }
+
+  const receivedAt = new Date().toISOString();
+
+  return input.alerts.map((alert, index) => normalizeAlertmanagerAlert(alert, {
+    commonLabels: input.commonLabels,
+    payloadStatus: input.status,
+    receivedAt,
+    index,
+  }));
+}
+
+function normalizeAlertmanagerAlert(alert, { commonLabels, payloadStatus, receivedAt, index }) {
+  if (!alert || typeof alert !== 'object' || Array.isArray(alert)) {
+    throw new RegistryError('Each Alertmanager alert must be an object', {
+      code: 'INVALID_ALERT_PAYLOAD',
+      statusCode: 400,
+      details: { fieldName: `alerts.${index}` },
+    });
+  }
+
+  const labels = alert.labels && typeof alert.labels === 'object' && !Array.isArray(alert.labels)
+    ? alert.labels
+    : {};
+  const fallbackLabels = commonLabels && typeof commonLabels === 'object' && !Array.isArray(commonLabels)
+    ? commonLabels
+    : {};
+  const status = normalizeAlertStatus(alert.status || payloadStatus);
+  const alertname = normalizeAlertField(labels.alertname ?? fallbackLabels.alertname, 'alertname', { required: true });
+  const namespace = normalizeAlertField(labels.namespace ?? fallbackLabels.namespace, 'namespace', { required: false });
+  const severity = normalizeAlertSeverity(labels.severity ?? fallbackLabels.severity, status);
+  const startsAt = normalizeAlertTimestamp(alert.startsAt, 'startsAt');
+
+  alertEventSequence += 1;
+
+  return {
+    id: buildAlertEventId(receivedAt, alertEventSequence),
+    receivedAt,
+    source: 'alertmanager',
+    status,
+    alertname,
+    namespace,
+    severity,
+    clusterId: 'user-k8s',
+    startsAt,
+  };
+}
+
+function normalizeAlertStatus(value) {
+  const status = String(value || 'firing').trim().toLowerCase();
+
+  if (!['firing', 'resolved'].includes(status)) {
+    throw new RegistryError('Alertmanager alert status must be firing or resolved', {
+      code: 'INVALID_ALERT_STATUS',
+      statusCode: 400,
+      details: { status },
+    });
+  }
+
+  return status;
+}
+
+function normalizeAlertSeverity(value, status) {
+  if (status === 'resolved') {
+    return 'resolved';
+  }
+
+  const severity = normalizeAlertField(value || 'warning', 'severity', { required: false }) || 'warning';
+
+  return severity.toLowerCase();
+}
+
+function normalizeAlertField(value, fieldName, { required }) {
+  if (value === undefined || value === null || value === '') {
+    if (required) {
+      throw new RegistryError(`Missing required alert label: ${fieldName}`, {
+        code: 'MISSING_ALERT_LABEL',
+        statusCode: 400,
+        details: { fieldName },
+      });
+    }
+
+    return null;
+  }
+
+  const text = String(value).trim();
+
+  if (!text || text.length > 120 || /[\r\n]/.test(text)) {
+    throw new RegistryError(`Alert label ${fieldName} must be a short single-line value`, {
+      code: 'INVALID_ALERT_LABEL',
+      statusCode: 400,
+      details: { fieldName },
+    });
+  }
+
+  return text;
+}
+
+function normalizeAlertTimestamp(value, fieldName) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new RegistryError(`Alert timestamp ${fieldName} must be an ISO timestamp`, {
+      code: 'INVALID_ALERT_TIMESTAMP',
+      statusCode: 400,
+      details: { fieldName },
+    });
+  }
+
+  return date.toISOString();
+}
+
+function buildAlertEventId(receivedAt, sequence) {
+  const compactTimestamp = receivedAt.replace(/\D/g, '').slice(0, 14);
+  const compactSequence = String(sequence).padStart(3, '0');
+
+  return `evt-${compactTimestamp}-${compactSequence}`;
 }
 
 function normalizeResourceName(value, fieldName) {

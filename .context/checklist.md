@@ -229,6 +229,77 @@ TASK-07 verified values:
 - Re-reading recommendations after approval returned `default` with `approved: true`.
 - `GET /api/clusters/edge-recovery/recommendations`: returned `CAPABILITY_NOT_SUPPORTED`.
 
+## TASK-08: Deploy Test Microservices on User Cluster
+
+Status: Done
+
+- [x] Create Auth, Order, and Analytics namespaces on the user cluster.
+- [x] Apply DR tier labels to each namespace.
+- [x] Deploy Auth, Order, and Analytics test microservices.
+- [x] Use policy-compliant manifests that satisfy Gatekeeper constraints for explicit image tags, allowed registries, non-root execution, host namespace avoidance, security context, and resource limits.
+- [x] Mirror required amd64 workload image to an allowed registry path.
+- [x] Confirm all three workload Deployments are `Available`.
+- [x] Confirm Prometheus node-exporter is already running on the user cluster.
+- [x] Expose Edge K3s MinIO API through a zrok public share for user-cluster Velero access.
+- [x] Install Velero on the user cluster using allowed mirrored amd64 images.
+- [x] Patch Velero runtime settings to satisfy non-root and writable `/tmp` requirements.
+- [x] Confirm Velero `BackupStorageLocation/default` is `Available`.
+- [x] Run smoke backup from the user cluster.
+- [x] Confirm smoke backup completes with `0` errors and `0` warnings.
+- [x] Confirm smoke backup object files are visible in Edge MinIO.
+- [x] Keep MinIO credentials, zrok account token, and Velero credentials out of Git-tracked files.
+
+TASK-08 verified values:
+- User cluster Kubernetes version: `v1.30.14`.
+- User cluster nodes observed: `k8s-master`, `k8s-worker1`, `k8s-worker2`, `k8s-worker3`, all `Ready`.
+- Workload namespaces: `auth-service`, `order-service`, `analytics`.
+- DR labels: `auth-service` `dr-tier=critical`, `order-service` `dr-tier=high`, `analytics` `dr-tier=low`; all use `dr-rto=1h` and `dr-rpo=30m`.
+- Workload image path: `docker.io/leeon3345/dr-nginx-unprivileged:1.27.4-alpine-amd64`.
+- Workload Deployments: `auth`, `order`, and `analytics`, each `1/1` available.
+- Existing node-exporter: `monitoring/monitoring-prometheus-node-exporter`, `4/4` ready.
+- Edge MinIO zrok endpoint: `https://dr-minio.shares.zrok.io`.
+- Velero bucket: `velero-backups`.
+- User-cluster Velero `s3Url`: `https://dr-minio.shares.zrok.io`.
+- Velero images mirrored under `docker.io/leeon3345/`: `velero:v1.14.1-amd64` and `velero-plugin-for-aws:v1.10.0-amd64`.
+- Velero namespace: `velero`; final pod status `Running`.
+- Velero `BackupStorageLocation/default`: `Available`.
+- Smoke backup: `user-k8s-smoke-001`, `Completed`, `0` errors, `0` warnings, `30/30` items backed up.
+- MinIO object verification path: `/data/velero-backups/backups/user-k8s-smoke-001`.
+
+## TASK-09: Add Prometheus Alertmanager Webhook Receiver
+
+Status: Done for platform receiver scope
+
+- [x] Add `POST /api/events/alert` endpoint for Alertmanager webhook payloads.
+- [x] Parse Alertmanager alert labels including `alertname`, `namespace`, and `severity`.
+- [x] Store sanitized alert events in memory only.
+- [x] Add `GET /api/events/latest` for dashboard polling.
+- [x] Add `GET /api/events/history` returning the last 20 alert events.
+- [x] Return structured errors for malformed payloads without crashing the backend.
+- [x] Keep alert ingestion decoupled from restore execution.
+- [x] Keep browser-side code free of shell execution.
+- [x] Add dashboard Incident Stream polling for alert events.
+- [x] Color-code alert stream entries: critical red, warning yellow, resolved green.
+- [x] Verify backend syntax succeeds.
+- [x] Verify frontend build succeeds.
+- [x] Verify curl simulation stores and returns an alert event.
+- [ ] Defer user-cluster Alertmanager configuration to a user-installable agent or install bundle task.
+- [ ] Defer PrometheusRule installation for `PodCrashLooping` and `NodeNotReady` to the agent/install task.
+
+TASK-09 verified values:
+- Added `POST /api/events/alert`.
+- Added `GET /api/events/latest`.
+- Added `GET /api/events/history`.
+- Event history limit: `20` in-memory events.
+- Alert source in API response: `alertmanager`.
+- Default external cluster identifier for ingested alerts: `user-k8s`.
+- Curl simulation alert: `PodCrashLooping` in namespace `order-service`, severity `critical`.
+- API startup verification port used because `3001` was already occupied: `http://127.0.0.1:3998`.
+- Syntax verification: `node --check server/server.mjs`.
+- Build verification: `npm run build`.
+- Restore execution was not triggered by alert receipt.
+- User-cluster Alertmanager and PrometheusRule installation intentionally deferred because the next product direction is a user-installable agent/install bundle.
+
 ## Documentation Rules
 
 - Keep task files focused on scope, constraints, and completion criteria.
