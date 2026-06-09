@@ -133,6 +133,10 @@ export async function loadEventHistory({ signal } = {}) {
   return getJson(API_PATHS.eventHistory, { signal });
 }
 
+export async function loadLatestEvent({ signal } = {}) {
+  return getJson(API_PATHS.latestEvent, { signal });
+}
+
 export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {
   return postJson(`/api/clusters/cloud-primary/recommendations/${encodeURIComponent(workloadId)}/approve`, { signal });
 }

@@ -7,7 +7,7 @@ Use this file as the short boot note for a new AI chat.
 Default new-chat prompt:
 
 ```text
-Read .context/START_HERE.md and task9.md only.
+Read .context/START_HERE.md and task10.md only.
 Do not open other files unless I ask.
 
 If you need more context, ask first and name the exact file.
@@ -46,11 +46,12 @@ Main product direction:
 - TASK-07: Policy-based recovery priority recommendations, server-side LLM/fallback explanations, and dashboard approval panel added.
 - TASK-08: User-cluster test microservices deployed, DR labels applied, node-exporter confirmed, Velero installed through zrok-exposed Edge MinIO, and smoke backup verified.
 - TASK-09: Prometheus Alertmanager webhook receiver, sanitized in-memory event history APIs, and dashboard incident polling added. User-cluster alert rule/agent installation is deferred to the next task.
+- TASK-10: React Flow topology now responds to TASK-09 alert events, with API-polled node states, alert-aware edge animation, recovered badges, and live Incident Stream updates.
 
 ## Current Next Task
 
 ```text
-TASK-10 should be drafted.
+TASK-11 should be drafted.
 ```
 
 Likely next focus:

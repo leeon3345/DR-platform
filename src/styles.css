@@ -62,11 +62,48 @@ button {
   filter: drop-shadow(0 0 5px rgba(100, 116, 139, 0.2));
 }
 
+.edge-normal-state .react-flow__edge-path,
+.react-flow__edge-path.edge-normal-state,
+.edge-resolved-state .react-flow__edge-path,
+.react-flow__edge-path.edge-resolved-state {
+  stroke-dasharray: 10 8;
+  filter: drop-shadow(0 0 5px rgba(16, 185, 129, 0.24));
+  animation: dashdraw 0.9s linear infinite;
+}
+
+.edge-alert-state .react-flow__edge-path,
+.react-flow__edge-path.edge-alert-state {
+  stroke-dasharray: 10 8;
+  filter: drop-shadow(0 0 7px rgba(239, 68, 68, 0.42));
+  animation: dashdraw 0.62s linear infinite;
+}
+
+.edge-restore-state .react-flow__edge-path,
+.react-flow__edge-path.edge-restore-state {
+  stroke-dasharray: 18 10;
+  filter: drop-shadow(0 0 8px rgba(139, 92, 246, 0.42));
+  animation: dashdraw 0.65s linear infinite;
+}
+
+.dr-node-pulse {
+  animation: nodePulse 1.25s ease-in-out infinite;
+}
+
 @keyframes dashdraw {
   from {
     stroke-dashoffset: 24;
   }
   to {
     stroke-dashoffset: 0;
+  }
+}
+
+@keyframes nodePulse {
+  0%,
+  100% {
+    box-shadow: 0 20px 25px -5px rgba(239, 68, 68, 0.1), 0 8px 10px -6px rgba(239, 68, 68, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.12), 0 24px 32px -8px rgba(239, 68, 68, 0.28);
   }
 }

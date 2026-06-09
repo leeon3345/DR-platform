@@ -12,7 +12,7 @@ import {
   getSmoothStepPath,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { approveRecoveryRecommendation, loadDashboardData, loadEventHistory } from "./api";
+import { approveRecoveryRecommendation, loadDashboardData, loadEventHistory, loadLatestEvent } from "./api";
 
 const statusStyles = {
   error: {
@@ -24,6 +24,15 @@ const statusStyles = {
     border: "border-red-200",
     glow: "shadow-red-500/10",
   },
+  outage: {
+    label: "Outage",
+    text: "Outage",
+    badge: "bg-red-50 text-red-700 ring-red-200",
+    dot: "bg-red-500 shadow-red-500/40",
+    icon: "bg-red-500 text-white",
+    border: "border-red-300",
+    glow: "shadow-red-500/20",
+  },
   safe: {
     label: "Safe",
     text: "Protected",
@@ -31,6 +40,24 @@ const statusStyles = {
     dot: "bg-emerald-500 shadow-emerald-500/40",
     icon: "bg-emerald-500 text-white",
     border: "border-emerald-200",
+    glow: "shadow-emerald-500/10",
+  },
+  warning: {
+    label: "Warning",
+    text: "Warning",
+    badge: "bg-amber-50 text-amber-800 ring-amber-200",
+    dot: "bg-amber-400 shadow-amber-400/40",
+    icon: "bg-amber-400 text-slate-950",
+    border: "border-amber-300",
+    glow: "shadow-amber-500/10",
+  },
+  recovered: {
+    label: "Recovered",
+    text: "Recovered",
+    badge: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    dot: "bg-emerald-500 shadow-emerald-500/40",
+    icon: "bg-emerald-500 text-white",
+    border: "border-emerald-300",
     glow: "shadow-emerald-500/10",
   },
   alerting: {
@@ -51,6 +78,15 @@ const statusStyles = {
     border: "border-sky-200",
     glow: "shadow-sky-500/10",
   },
+  processing: {
+    label: "Processing",
+    text: "Decisioning",
+    badge: "bg-sky-50 text-sky-700 ring-sky-200",
+    dot: "bg-sky-500 shadow-sky-500/40",
+    icon: "bg-sky-500 text-white",
+    border: "border-sky-300",
+    glow: "shadow-sky-500/10",
+  },
   restoring: {
     label: "Restoring",
     text: "Failover",
@@ -59,6 +95,15 @@ const statusStyles = {
     icon: "bg-violet-500 text-white",
     border: "border-violet-200",
     glow: "shadow-violet-500/10",
+  },
+  standby: {
+    label: "Standby",
+    text: "Ready",
+    badge: "bg-slate-50 text-slate-700 ring-slate-200",
+    dot: "bg-slate-400 shadow-slate-400/40",
+    icon: "bg-slate-500 text-white",
+    border: "border-slate-200",
+    glow: "shadow-slate-500/10",
   },
 };
 
@@ -444,6 +489,7 @@ const flowEdges = [
 
 const FALLBACK_MINIO_ENDPOINT = "http://10.0.2.11:30900";
 const FALLBACK_MINIO_NODE_PORT = "30900";
+const ALERT_RESOLVED_BADGE_MS = 30000;
 const edgeLabelTones = {
   command: "border-blue-200 bg-white text-blue-700 shadow-blue-900/10",
   danger: "border-red-200 bg-white text-red-700 shadow-red-900/10",
@@ -593,6 +639,265 @@ function buildAlertEventRows(events) {
     formatAlertEventText(event),
     getAlertEventDotColor(event),
   ]);
+}
+
+function normalizeAlertEvent(event) {
+  const value = unwrapPayload(event);
+  const alertname = firstValue(value, ["labels.alertname", "alertname"], "Alertmanager alert");
+  const namespace = firstValue(value, ["labels.namespace", "namespace"], null);
+  const clusterId = firstValue(value, ["labels.clusterId", "labels.cluster", "clusterId", "cluster"], null);
+  const severity = String(firstValue(value, ["labels.severity", "severity"], "warning")).toLowerCase();
+  const status = String(firstValue(value, ["status"], "firing")).toLowerCase();
+  const source = String(firstValue(value, ["source", "receiver"], "alertmanager")).toLowerCase();
+  const startsAt = firstValue(value, ["startsAt", "starts_at"], null);
+  const endsAt = firstValue(value, ["endsAt", "ends_at"], null);
+  const receivedAt = firstValue(value, ["receivedAt", "received_at", "updatedAt", "time"], startsAt || endsAt);
+
+  return {
+    ...value,
+    alertname,
+    namespace,
+    clusterId,
+    severity,
+    status,
+    source,
+    startsAt,
+    endsAt,
+    receivedAt,
+  };
+}
+
+function extractAlertEvents(payload) {
+  const value = unwrapPayload(payload);
+  const events = asArray(value, ["events", "alerts", "event.alerts", "latest.alerts"]);
+
+  if (events.length) {
+    return events.map(normalizeAlertEvent);
+  }
+
+  const singleEvent = firstValue(value, ["event", "latest", "alert"], null);
+
+  if (singleEvent) {
+    return extractAlertEvents(singleEvent);
+  }
+
+  if (value && typeof value === "object" && (value.status || value.labels || value.alertname || value.namespace)) {
+    return [normalizeAlertEvent(value)];
+  }
+
+  return [];
+}
+
+function getAlertEventKey(event) {
+  return [
+    firstValue(event, ["fingerprint", "id"], ""),
+    firstValue(event, ["alertname"], "alert"),
+    firstValue(event, ["namespace", "clusterId"], "cluster"),
+    firstValue(event, ["status"], "firing"),
+    firstValue(event, ["startsAt"], ""),
+    firstValue(event, ["endsAt"], ""),
+  ].join(":");
+}
+
+function getEventTimestamp(event) {
+  const value = firstValue(event, ["receivedAt", "endsAt", "startsAt"], null);
+  const timestamp = value ? new Date(value).getTime() : 0;
+
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeAlertEvents(existingEvents, incomingEvents) {
+  const eventMap = new Map();
+
+  [...incomingEvents, ...existingEvents].forEach((event) => {
+    const normalized = normalizeAlertEvent(event);
+    const key = getAlertEventKey(normalized);
+
+    if (!eventMap.has(key)) {
+      eventMap.set(key, normalized);
+    }
+  });
+
+  return Array.from(eventMap.values())
+    .sort((left, right) => getEventTimestamp(right) - getEventTimestamp(left))
+    .slice(0, 20);
+}
+
+function getAlertTargetNodes(alert) {
+  const targets = new Set();
+  const clusterId = String(alert.clusterId || "").toLowerCase();
+
+  if (
+    ["order-service", "auth-service"].includes(alert.namespace) ||
+    ["cloud-primary", "prod-cloud-main", "user-k8s"].includes(clusterId) ||
+    alert.alertname === "NodeNotReady"
+  ) {
+    targets.add("cloud-k8s");
+  }
+
+  if (["edge-recovery", "edge-k3s"].includes(clusterId)) {
+    targets.add("edge-k3s");
+  }
+
+  if (alert.source === "alertmanager") {
+    targets.add("zabbix");
+  }
+
+  return targets;
+}
+
+function buildAlertMetrics(alert) {
+  return [
+    ["Alert", alert.alertname],
+    ["Scope", alert.namespace || alert.clusterId || "cluster"],
+    ["Severity", alert.severity],
+  ];
+}
+
+function getAlertTopologyState(events, now = Date.now()) {
+  const normalizedEvents = events.map(normalizeAlertEvent);
+  const firingEvents = normalizedEvents.filter((event) => event.status === "firing");
+  const recentResolvedEvents = normalizedEvents.filter((event) => {
+    if (event.status !== "resolved") {
+      return false;
+    }
+
+    const timestamp = getEventTimestamp(event);
+
+    return timestamp > 0 && now - timestamp <= ALERT_RESOLVED_BADGE_MS;
+  });
+  const nodes = {};
+
+  firingEvents.forEach((event) => {
+    getAlertTargetNodes(event).forEach((nodeId) => {
+      const isCritical = event.severity === "critical";
+
+      nodes[nodeId] = {
+        status: nodeId === "zabbix" ? "alerting" : isCritical ? "outage" : "warning",
+        detail:
+          nodeId === "zabbix"
+            ? `${event.alertname} webhook received`
+            : `${event.alertname} is ${event.status} for ${event.namespace || event.clusterId || "cluster"}`,
+        metrics: buildAlertMetrics(event),
+        pulse: isCritical,
+      };
+    });
+  });
+
+  recentResolvedEvents.forEach((event) => {
+    getAlertTargetNodes(event).forEach((nodeId) => {
+      if (!nodes[nodeId]) {
+        nodes[nodeId] = {
+          status: "recovered",
+          detail: `${event.alertname} resolved`,
+          metrics: buildAlertMetrics(event),
+          pulse: false,
+        };
+      }
+    });
+  });
+
+  return {
+    hasFiring: firingEvents.length > 0,
+    hasCriticalFiring: firingEvents.some((event) => event.severity === "critical"),
+    hasRecentResolved: recentResolvedEvents.length > 0,
+    nodes,
+  };
+}
+
+function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId) {
+  if (alertState.nodes[nodeId]) {
+    return {
+      ...data,
+      ...alertState.nodes[nodeId],
+    };
+  }
+
+  if (alertState.hasFiring && nodeId === "ai-orchestrator") {
+    return {
+      ...data,
+      status: "processing",
+      detail: "Processing alert context for recovery recommendation",
+      metrics: [
+        ["Mode", "Alert analysis"],
+        ["Input", "Latest event"],
+        ["Action", "Recommendation pending"],
+      ],
+    };
+  }
+
+  if (pendingWorkloadId && nodeId === "ai-orchestrator") {
+    return {
+      ...data,
+      status: "processing",
+      detail: "Saving recovery approval state",
+      metrics: [
+        ["Workload", pendingWorkloadId],
+        ["Action", "Approval"],
+        ["State", "Pending"],
+      ],
+    };
+  }
+
+  if (alertState.hasFiring && nodeId === "edge-k3s") {
+    return {
+      ...data,
+      status: "standby",
+      detail: "Recovery target is standing by; restore not started",
+      metrics: [
+        ["Cluster", "edge-recovery"],
+        ["Restore", "Not started"],
+        ["Mode", "Standby"],
+      ],
+    };
+  }
+
+  return data;
+}
+
+function getEdgeFlowState(alertState, activeCluster) {
+  if (alertState.hasFiring) {
+    return "alert";
+  }
+
+  if (alertState.hasRecentResolved) {
+    return "resolved";
+  }
+
+  if (activeCluster?.nodeOverrides?.["edge-k3s"]?.status === "restoring") {
+    return "restore";
+  }
+
+  return "normal";
+}
+
+function buildAlertAwareEdges(edges, flowState) {
+  const edgeStyles = {
+    alert: { className: "edge-alert-state", color: "#ef4444", strokeWidth: 3, labelTone: "danger" },
+    normal: { className: "edge-normal-state", color: "#10b981", strokeWidth: 2.5, labelTone: "neutral" },
+    resolved: { className: "edge-resolved-state", color: "#10b981", strokeWidth: 2.75, labelTone: "neutral" },
+    restore: { className: "edge-restore-state", color: "#8b5cf6", strokeWidth: 4, labelTone: "restore" },
+  };
+  const style = edgeStyles[flowState] ?? edgeStyles.normal;
+
+  return edges.map((edge) => ({
+    ...edge,
+    className: style.className,
+    data: {
+      ...edge.data,
+      labelTone: style.labelTone,
+    },
+    markerEnd: {
+      ...edge.markerEnd,
+      color: style.color,
+    },
+    style: {
+      ...edge.style,
+      stroke: style.color,
+      strokeWidth: style.strokeWidth,
+      strokeDasharray: "10 8",
+    },
+  }));
 }
 
 function isReadyLike(value) {
@@ -1152,11 +1457,13 @@ function FlowHandle({ type, position, id }) {
 }
 
 function DisasterRecoveryNode({ data }) {
-  const status = statusStyles[data.status];
+  const status = statusStyles[data.status] ?? statusStyles.safe;
 
   return (
     <div
-      className={`w-[260px] rounded-lg border ${status.border} bg-white shadow-xl ${status.glow} transition duration-200 hover:-translate-y-0.5 hover:shadow-2xl`}
+      className={`w-[260px] rounded-lg border ${status.border} bg-white shadow-xl ${status.glow} transition duration-200 hover:-translate-y-0.5 hover:shadow-2xl ${
+        data.pulse ? "dr-node-pulse" : ""
+      }`}
     >
       <FlowHandle id="left" type="target" position={Position.Left} />
       <FlowHandle id="right" type="source" position={Position.Right} />
@@ -1426,9 +1733,11 @@ function App() {
   const [pendingWorkloadId, setPendingWorkloadId] = useState(null);
   const [approvalError, setApprovalError] = useState(null);
   const [alertEvents, setAlertEvents] = useState([]);
+  const [eventClock, setEventClock] = useState(Date.now());
   const [eventPollingError, setEventPollingError] = useState(null);
   const nodeTypes = useMemo(() => ({ drNode: DisasterRecoveryNode }), []);
   const edgeTypes = useMemo(() => ({ labeled: LabeledFlowEdge }), []);
+  const alertTopologyState = useMemo(() => getAlertTopologyState(alertEvents, eventClock), [alertEvents, eventClock]);
   const dashboardClusters = useMemo(() => buildDashboardClusters(apiResults, apiLoading, alertEvents), [apiResults, apiLoading, alertEvents]);
   const metricGroups = useMemo(() => buildMetricGroups(apiResults, apiLoading), [apiResults, apiLoading]);
   const recommendations = useMemo(() => getRecoveryRecommendations(apiResults), [apiResults]);
@@ -1441,11 +1750,22 @@ function App() {
       baseFlowNodes.map((node) => ({
         ...node,
         data: {
-          ...node.data,
-          ...(activeCluster.nodeOverrides[node.id] ?? {}),
+          ...applyAlertTopologyToNode(
+            node.id,
+            {
+              ...node.data,
+              ...(activeCluster.nodeOverrides[node.id] ?? {}),
+            },
+            alertTopologyState,
+            pendingWorkloadId,
+          ),
         },
       })),
-    [activeCluster],
+    [activeCluster, alertTopologyState, pendingWorkloadId],
+  );
+  const activeEdges = useMemo(
+    () => buildAlertAwareEdges(flowEdges, getEdgeFlowState(alertTopologyState, activeCluster)),
+    [activeCluster, alertTopologyState],
   );
   const apiErrors = endpointErrors(apiResults);
   const validateErrors = validationErrors(apiResults);
@@ -1459,7 +1779,8 @@ function App() {
     loadDashboardData({ signal: controller.signal })
       .then((results) => {
         setApiResults(results);
-        setAlertEvents(asArray(results.eventHistory?.ok ? results.eventHistory.data : null, ["events"]));
+        setAlertEvents(extractAlertEvents(results.eventHistory?.ok ? results.eventHistory.data : null));
+        setEventClock(Date.now());
       })
       .catch((error) => {
         if (!controller.signal.aborted) {
@@ -1489,10 +1810,12 @@ function App() {
       controller = requestController;
 
       try {
-        const payload = await loadEventHistory({ signal: requestController.signal });
+        const payload = await loadLatestEvent({ signal: requestController.signal });
+        const latestEvents = extractAlertEvents(payload);
 
         if (active) {
-          setAlertEvents(asArray(payload, ["events"]));
+          setAlertEvents((events) => mergeAlertEvents(events, latestEvents));
+          setEventClock(Date.now());
           setEventPollingError(null);
         }
       } catch (error) {
@@ -1599,7 +1922,7 @@ function App() {
               <ReactFlow
                 key={activeCluster.id}
                 nodes={activeNodes}
-                edges={flowEdges}
+                edges={activeEdges}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 fitView
