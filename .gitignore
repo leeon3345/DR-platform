@@ -13,6 +13,7 @@ dist
 .context/handoff.md
 server/registry/recovery-policy.json
 server/registry/tokens.json
+server/registry/rto-history.json
 .drctl/
 cli/.drctl/
 

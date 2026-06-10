@@ -4,15 +4,21 @@
   "description": "DR Platform operator CLI",
   "type": "module",
   "bin": {
-    "drctl": "./bin/drctl.mjs"
+    "drctl": "./dist/drctl.cjs"
   },
   "scripts": {
-    "start": "node ./bin/drctl.mjs"
+    "start": "node ./bin/drctl.mjs",
+    "build:cjs": "esbuild ./bin/drctl.mjs --bundle --platform=node --target=node18 --format=cjs --outfile=dist/drctl.cjs",
+    "build:bin": "npm run build:cjs && pkg . --targets node18-linux-x64,node18-macos-x64,node18-macos-arm64,node18-win-x64 --out-path ../server/public/downloads"
   },
   "dependencies": {
     "commander": "^12.1.0"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "pkg": "^5.8.1"
   }
 }

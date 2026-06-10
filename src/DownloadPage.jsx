@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-const PLATFORM_URL = import.meta.env.VITE_PLATFORM_URL || "https://your-platform.zrok.io";
+const PLATFORM_URL = import.meta.env.VITE_PLATFORM_URL || "https://drplatform.share.zrok.io";
 
 const STEPS = [
   {
@@ -9,7 +9,7 @@ const STEPS = [
     description: "drctl CLI로 플랫폼에 조직을 등록하고 토큰을 발급받습니다.",
     code: `drctl init \\
   --platform ${PLATFORM_URL} \\
-  --name <your-org>`,
+  --name my-organization`,
     note: "토큰이 발급되고 대시보드 URL이 제공됩니다.",
     accent: "sky",
   },
@@ -17,28 +17,32 @@ const STEPS = [
     number: 2,
     title: "사용자 클러스터에 Velero 설치",
     description: "Velero를 설치하여 클러스터 백업을 MinIO 스토리지에 저장합니다.",
-    code: `velero install \\
+    code: `cat <<EOF > ./credentials-velero
+[default]
+aws_access_key_id=minio
+aws_secret_access_key=minio123
+EOF
+
+velero install \\
   --provider aws \\
   --bucket velero-backups \\
   --secret-file ./credentials-velero \\
-  --backup-location-config \\
-    s3Url=http://<minio-endpoint>:30900,\\
-    region=minio,s3ForcePathStyle=true \\
+  --backup-location-config s3Url=http://minio.example.com:30900,region=minio,s3ForcePathStyle=true,prefix=my-cluster/ \\
   --use-volume-snapshots=false \\
   --plugins velero/velero-plugin-for-aws:v1.10.0`,
-    note: "MinIO endpoint는 플랫폼 관리자에게 확인하세요.",
+    note: "MinIO endpoint는 플랫폼 관리자에게 확인하세요. prefix에는 본인의 clusterId를 적어주세요.",
     accent: "emerald",
   },
   {
     number: 3,
     title: "dr-agent 설치 (Helm)",
     description: "Helm으로 dr-agent를 설치하여 클러스터 상태를 자동으로 전송합니다.",
-    code: `helm install dr-agent \\
-  oci://ghcr.io/dr-platform/dr-agent \\
+    code: `helm repo add dr-platform ${PLATFORM_URL}/api/download
+helm install dr-agent dr-platform/dr-agent \\
   --set agent.platformUrl=${PLATFORM_URL} \\
   --set agent.clusterId=my-cluster \\
-  --set agent.token=<your-token>`,
-    note: "토큰은 Step 1에서 발급받은 값을 사용합니다.",
+  --set agent.token=my-platform-token`,
+    note: "토큰은 Step 1에서 발급받은 값을 사용합니다. 새로운 클러스터를 추가하려면 drctl init을 다시 실행할 필요 없이 기존 토큰과 새로운 clusterId를 넣어 Helm 설치만 하면 여러 클러스터를 통합 관리할 수 있습니다.",
     accent: "violet",
   },
   {
@@ -57,7 +61,7 @@ const STEPS = [
     number: 5,
     title: "대시보드 접속",
     description: "발급받은 토큰으로 대시보드에 접속하여 클러스터를 모니터링합니다.",
-    code: `${PLATFORM_URL}/dashboard?token=<your-token>`,
+    code: `${PLATFORM_URL}/dashboard?token=my-platform-token`,
     note: "토큰이 포함된 URL을 브라우저에 입력하세요.",
     accent: "sky",
   },
@@ -179,15 +183,17 @@ export default function DownloadPage() {
               </div>
               <div>
                 <h2 className="text-lg font-black text-white">사전 준비: drctl CLI 설치</h2>
-                <p className="text-sm font-medium text-slate-400">DR Platform CLI 도구를 전역으로 설치합니다.</p>
+                <p className="text-sm font-medium text-slate-400">DR Platform CLI 도구를 다운로드하여 전역으로 설치합니다.</p>
               </div>
             </div>
             <div className="download-code-block relative mt-4 rounded-xl bg-[#0a1628] p-4 font-mono text-sm">
-              <CopyButton text="npm install -g drctl" />
+              <CopyButton text={`curl -sL ${PLATFORM_URL}/api/download/install.sh | bash`} />
               <span className="text-slate-500">$ </span>
-              <span className="text-sky-300">npm install</span>
-              <span className="text-slate-300"> -g </span>
-              <span className="text-emerald-300">drctl</span>
+              <span className="text-sky-300">curl</span>
+              <span className="text-slate-300"> -sL </span>
+              <span className="text-emerald-300">{PLATFORM_URL}/api/download/install.sh</span>
+              <span className="text-slate-300"> | </span>
+              <span className="text-sky-300">bash</span>
             </div>
           </div>
         </div>

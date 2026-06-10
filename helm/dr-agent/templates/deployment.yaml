@@ -22,6 +22,9 @@ spec:
         - name: dr-agent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
           env:
             - name: PLATFORM_URL
               value: {{ required "agent.platformUrl is required" .Values.agent.platformUrl | quote }}

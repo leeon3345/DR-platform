@@ -4,8 +4,8 @@ import { commandDefaults } from './lab-config.mjs';
 const REDACTION_PATTERNS = [
   /aws_secret_access_key\s*=\s*[^\s]+/gi,
   /aws_access_key_id\s*=\s*[^\s]+/gi,
-  /password\s*[:=]\s*[^\s]+/gi,
-  /secret\s*[:=]\s*[^\s]+/gi,
+  /password[ \t]*[:=][ \t]*(?![{\[])[^\r\n]*/gi,
+  /secret[ \t]*[:=][ \t]*(?![{\[])[^\r\n]*/gi,
 ];
 
 export class ApiCommandError extends Error {
@@ -19,7 +19,7 @@ export class ApiCommandError extends Error {
 export function sanitizeOutput(value) {
   const text = String(value || '');
   return REDACTION_PATTERNS.reduce(
-    (output, pattern) => output.replace(pattern, (match) => match.split(/[=:]/)[0] + '=***'),
+    (output, pattern) => output.replace(pattern, (match) => `${match.split(/[=:]/)[0]}=***`),
     text,
   ).trim();
 }
@@ -145,17 +145,19 @@ export function parseJsonCommand(stdout, label) {
 
 function buildExpectScript(cluster, remoteCommand, timeoutMs) {
   const timeoutSeconds = Math.ceil(timeoutMs / 1000);
+  const encodedRemoteCommand = Buffer.from(remoteCommand).toString('base64');
 
   return `
 set timeout ${timeoutSeconds}
-set password [exec /usr/bin/printenv DR_SSH_PASSWORD]
-spawn ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${cluster.ssh.port} ${cluster.ssh.user}@${cluster.ssh.host} ${tclBrace(remoteCommand)}
+set password $env(DR_SSH_PASSWORD)
+set remoteCommand [binary decode base64 {${encodedRemoteCommand}}]
+spawn -noecho ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${cluster.ssh.port} ${cluster.ssh.user}@${cluster.ssh.host} -- $remoteCommand
 expect {
   -re "(?i)password.*:" {
     send "$password\\r"
     exp_continue
   }
-  eof
+  eof {}
   timeout {
     exit 124
   }
@@ -163,10 +165,6 @@ expect {
 catch wait result
 exit [lindex $result 3]
 `;
-}
-
-function tclBrace(value) {
-  return `{${String(value).replaceAll('}', '\\}')}}`;
 }
 
 function extractJson(output) {

@@ -26,7 +26,10 @@ const recoveryPolicyRegistryUrl = new URL('./registry/recovery-policy.json', imp
 const recoveryPolicyRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
 const tokenRegistryUrl = new URL('./registry/tokens.json', import.meta.url);
 const tokenRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
+const rtoHistoryRegistryUrl = new URL('./registry/rto-history.json', import.meta.url);
+const rtoHistoryRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
 const alertEventHistoryLimit = 20;
+const rtoHistoryLimit = 50;
 const alertEventHistory = [];
 const agentCommandQueues = new Map();
 let alertEventSequence = 0;
@@ -63,6 +66,37 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') {
     sendJson(response, 204, null);
     return;
+  }
+
+  if (request.method === 'GET' && url.pathname.startsWith('/api/download/')) {
+    try {
+      const filename = url.pathname.replace('/api/download/', '');
+      const safeFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '');
+      const filePath = new URL(`./public/downloads/${safeFilename}`, import.meta.url);
+      const { statSync } = await import('node:fs');
+      const stat = statSync(filePath);
+      if (stat.isFile()) {
+        let contentType = 'application/octet-stream';
+        if (filename.endsWith('.yaml') || filename.endsWith('.yml')) {
+          contentType = 'application/yaml';
+        } else if (filename.endsWith('.tgz') || filename.endsWith('.tar.gz')) {
+          contentType = 'application/gzip';
+        } else if (filename.endsWith('.sh')) {
+          contentType = 'text/x-shellscript';
+        }
+
+        response.writeHead(200, {
+          'Content-Length': stat.size,
+          'Content-Type': contentType,
+        });
+        const { createReadStream } = await import('node:fs');
+        const fileStream = createReadStream(filePath);
+        fileStream.pipe(response);
+        return;
+      }
+    } catch (err) {
+      // Fall through to 404
+    }
   }
 
   const routeMatch = getRoute(request.method, url.pathname);
@@ -517,7 +551,7 @@ async function previewRestore({ request, params, auth }) {
   assertCapability(targetCluster, 'restoreExecute');
 
   const sourceBackup = await fetchBackup(sourceCluster, input.backupName);
-  const manifest = buildRestoreManifest(input);
+  const manifest = buildRestoreManifest(input, sourceCluster.id);
 
   return {
     preview: {
@@ -546,10 +580,11 @@ async function createRestore({ request, params, auth }) {
   assertCapability(targetCluster, 'restoreExecute');
 
   const sourceBackup = await fetchBackup(sourceCluster, input.backupName);
-  const manifest = buildRestoreManifest(input);
+  const manifest = buildRestoreManifest(input, sourceCluster.id);
 
   if (targetCluster.kind === 'user-k8s') {
     const command = enqueueAgentRestoreCommand(targetCluster, input);
+    await recordRestoreStarted(sourceCluster.id, input, command.createdAt);
 
     return {
       statusCode: 202,
@@ -579,15 +614,23 @@ async function createRestore({ request, params, auth }) {
     buildCreateManifestCommand(targetCluster.commands.restoreExecute, manifest),
   );
   const restore = parseJsonCommand(result.stdout, `${targetCluster.id}:restoreExecute`);
+  const acceptedTimestamp = new Date().toISOString();
+  const normalizedRestore = normalizeRestore(restore);
+
+  await recordRestoreStarted(
+    sourceCluster.id,
+    input,
+    normalizedRestore.startTimestamp || normalizedRestore.createdTimestamp || acceptedTimestamp,
+  );
 
   return {
     statusCode: 202,
     payload: {
-      restore: normalizeRestore(restore),
+      restore: normalizedRestore,
       sourceBackup: normalizeBackup(sourceBackup),
       sourceClusterId: sourceCluster.id,
       targetClusterId: targetCluster.id,
-      acceptedTimestamp: new Date().toISOString(),
+      acceptedTimestamp,
     },
   };
 }
@@ -608,17 +651,23 @@ async function getRestoreStatus({ params }) {
       });
     }
 
+    const normalizedRestore = {
+      restoreName: status.restoreName || restoreName,
+      backupName: status.backupName || null,
+      status: status.phase,
+      errors: 0,
+      warnings: 0,
+      createdTimestamp: null,
+      startTimestamp: null,
+      completionTimestamp: status.phase === 'Completed' || status.phase === 'Failed' ? status.updatedAt : null,
+      includedNamespaces: null,
+    };
+
+    await recordRestoreCompletion(normalizedRestore);
+
     return {
       restore: {
-        restoreName: status.restoreName || restoreName,
-        backupName: status.backupName || null,
-        status: status.phase,
-        errors: 0,
-        warnings: 0,
-        createdTimestamp: null,
-        startTimestamp: null,
-        completionTimestamp: status.phase === 'Completed' || status.phase === 'Failed' ? status.updatedAt : null,
-        includedNamespaces: null,
+        ...normalizedRestore,
       },
       clusterId: cluster.id,
       operationId: status.operationId,
@@ -634,11 +683,25 @@ async function getRestoreStatus({ params }) {
     `${cluster.commands.restoreStatus} get restores.velero.io ${shellQuote(restoreName)} -n ${veleroNamespace} -o json`,
   );
   const restore = parseJsonCommand(result.stdout, `${cluster.id}:restoreStatus`);
+  const normalizedRestore = normalizeRestore(restore);
+
+  await recordRestoreCompletion(normalizedRestore);
 
   return {
-    restore: normalizeRestore(restore),
+    restore: normalizedRestore,
     clusterId: cluster.id,
     lastCheckedTimestamp: new Date().toISOString(),
+  };
+}
+
+async function getRtoHistory({ params }) {
+  const cluster = await getCluster(params.clusterId);
+  const registry = await readRtoHistoryRegistry();
+  const events = getRtoClusterEvents(registry, cluster.id);
+
+  return {
+    clusterId: cluster.id,
+    history: events.map(toPublicRtoEvent),
   };
 }
 
@@ -699,14 +762,17 @@ async function getRecoveryRecommendations({ params }) {
     workloads,
     backups: history.backups,
   });
+  const generatedAt = new Date().toISOString();
   const recommendations = await Promise.all(scored.map(async (recommendation) => ({
       ...recommendation,
       explanation: await generateRecommendationExplanation(recommendation),
     })));
 
+  await recordRecommendationGenerated(cluster.id, recommendations, generatedAt);
+
   return {
     clusterId: cluster.id,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     recommendations,
   };
 }
@@ -729,6 +795,7 @@ async function approveRecoveryRecommendation({ params }) {
   };
 
   await writeRecoveryPolicyRegistry(registry);
+  await recordRecoveryApproval(cluster.id, namespace, updatedAt);
 
   return {
     clusterId: cluster.id,
@@ -744,6 +811,7 @@ async function receiveAlertEvent({ request }) {
 
   alertEventHistory.unshift(...events);
   alertEventHistory.splice(alertEventHistoryLimit);
+  await recordAlertDetected(events);
 
   return {
     statusCode: 202,
@@ -909,6 +977,7 @@ async function receiveAgentStatus({ request }) {
       },
     },
   }, cluster.id);
+  await recordRestoreCompletion(profile.agent.restoreStatuses[operationId]);
 
   return {
     statusCode: 202,
@@ -1483,8 +1552,8 @@ function normalizeShortText(value, fieldName, { required = true, maxLength = 160
 }
 
 function assertRecoveryRecommendationSupported(cluster) {
-  if (cluster.kind !== 'cloud-k8s') {
-    throw new RegistryError('Recovery recommendations are only supported for cloud-k8s source clusters', {
+  if (cluster.kind !== 'cloud-k8s' && cluster.kind !== 'user-k8s') {
+    throw new RegistryError('Recovery recommendations are only supported for cloud-k8s and user-k8s source clusters', {
       code: 'CAPABILITY_NOT_SUPPORTED',
       statusCode: 400,
       details: {
@@ -1595,6 +1664,383 @@ function getRecoveryPolicyClusterState(registry, clusterId) {
       : {},
     updatedAt: state.updatedAt || null,
   };
+}
+
+async function readRtoHistoryRegistry() {
+  try {
+    const text = await fs.readFile(rtoHistoryRegistryUrl, 'utf8');
+    const registry = JSON.parse(text);
+
+    return normalizeRtoHistoryRegistry(registry);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { clusters: {} };
+    }
+
+    if (error instanceof SyntaxError) {
+      throw new RegistryError('RTO history registry contains invalid JSON', {
+        code: 'INVALID_RTO_HISTORY_REGISTRY',
+        statusCode: 500,
+      });
+    }
+
+    throw error;
+  }
+}
+
+async function writeRtoHistoryRegistry(registry) {
+  await fs.mkdir(rtoHistoryRegistryDirectoryUrl, { recursive: true });
+  await fs.writeFile(rtoHistoryRegistryUrl, `${JSON.stringify(normalizeRtoHistoryRegistry(registry), null, 2)}\n`, 'utf8');
+}
+
+function normalizeRtoHistoryRegistry(registry) {
+  const clusters = registry && typeof registry === 'object' && !Array.isArray(registry)
+    ? registry.clusters || {}
+    : {};
+
+  return {
+    clusters: Object.fromEntries(
+      Object.entries(clusters)
+        .filter(([, state]) => state && typeof state === 'object' && !Array.isArray(state))
+        .map(([clusterId, state]) => [
+          clusterId,
+          {
+            events: Array.isArray(state.events)
+              ? state.events.map(normalizeRtoEventRecord).filter(Boolean).slice(0, rtoHistoryLimit)
+              : [],
+          },
+        ]),
+    ),
+  };
+}
+
+function normalizeRtoEventRecord(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    return null;
+  }
+
+  const namespace = typeof event.namespace === 'string' && resourceNamePattern.test(event.namespace)
+    ? event.namespace
+    : null;
+
+  if (!namespace) {
+    return null;
+  }
+
+  return {
+    id: normalizeRtoId(event.id),
+    restoreName: normalizeOptionalRtoResource(event.restoreName),
+    namespace,
+    alertName: normalizeOptionalRtoText(event.alertName),
+    alertDetectedAt: normalizeOptionalRtoTimestamp(event.alertDetectedAt),
+    recommendationAt: normalizeOptionalRtoTimestamp(event.recommendationAt),
+    approvedAt: normalizeOptionalRtoTimestamp(event.approvedAt),
+    restoreStartedAt: normalizeOptionalRtoTimestamp(event.restoreStartedAt),
+    restoreCompletedAt: normalizeOptionalRtoTimestamp(event.restoreCompletedAt),
+    targetClusterId: normalizeOptionalRtoResource(event.targetClusterId),
+    backupName: normalizeOptionalRtoResource(event.backupName),
+    targetRtoMinutes: normalizeOptionalRtoNumber(event.targetRtoMinutes),
+    targetRtoLabel: normalizeOptionalRtoText(event.targetRtoLabel),
+    createdAt: normalizeOptionalRtoTimestamp(event.createdAt) || new Date().toISOString(),
+    updatedAt: normalizeOptionalRtoTimestamp(event.updatedAt) || new Date().toISOString(),
+  };
+}
+
+function getRtoClusterState(registry, clusterId) {
+  registry.clusters ??= {};
+  registry.clusters[clusterId] ??= { events: [] };
+  registry.clusters[clusterId].events = Array.isArray(registry.clusters[clusterId].events)
+    ? registry.clusters[clusterId].events
+    : [];
+
+  return registry.clusters[clusterId];
+}
+
+function getRtoClusterEvents(registry, clusterId) {
+  return [...getRtoClusterState(registry, clusterId).events]
+    .sort((left, right) => getRtoEventSortTime(right) - getRtoEventSortTime(left))
+    .slice(0, rtoHistoryLimit);
+}
+
+async function recordAlertDetected(events) {
+  const firingEvents = events.filter((event) => event.status === 'firing' && event.namespace);
+
+  if (firingEvents.length === 0) {
+    return;
+  }
+
+  const policyRegistry = await readRecoveryPolicyRegistry();
+  const registry = await readRtoHistoryRegistry();
+
+  firingEvents.forEach((event) => {
+    const clusterId = resolveRtoSourceClusterId(event.clusterId);
+    const namespace = event.namespace;
+    const now = new Date().toISOString();
+    const state = getRtoClusterState(registry, clusterId);
+    const existing = findOpenRtoEvent(state.events, namespace);
+    const target = resolveRtoTarget(policyRegistry, clusterId, namespace);
+    const record = existing || {
+      id: createRtoEventId(),
+      namespace,
+      createdAt: now,
+    };
+
+    Object.assign(record, {
+      alertName: event.alertname || record.alertName || null,
+      alertDetectedAt: record.alertDetectedAt || event.startsAt || event.receivedAt || now,
+      targetRtoMinutes: record.targetRtoMinutes ?? target.targetRtoMinutes,
+      targetRtoLabel: record.targetRtoLabel || target.targetRtoLabel,
+      updatedAt: now,
+    });
+
+    if (!existing) {
+      state.events.unshift(record);
+    }
+  });
+
+  trimRtoHistory(registry);
+  await writeRtoHistoryRegistry(registry);
+}
+
+async function recordRecommendationGenerated(clusterId, recommendations, generatedAt) {
+  const registry = await readRtoHistoryRegistry();
+  let changed = false;
+
+  recommendations.forEach((recommendation) => {
+    const namespace = recommendation.namespace || recommendation.workloadId;
+    const state = getRtoClusterState(registry, clusterId);
+    const record = namespace ? findOpenRtoEvent(state.events, namespace) : null;
+
+    if (!record) {
+      return;
+    }
+
+    record.recommendationAt ||= generatedAt;
+    record.targetRtoMinutes ??= parseDurationToMinutes(recommendation.rto);
+    record.targetRtoLabel ||= recommendation.rto || null;
+    record.updatedAt = generatedAt;
+    changed = true;
+  });
+
+  if (changed) {
+    trimRtoHistory(registry);
+    await writeRtoHistoryRegistry(registry);
+  }
+}
+
+async function recordRecoveryApproval(clusterId, namespace, approvedAt) {
+  const policyRegistry = await readRecoveryPolicyRegistry();
+  const registry = await readRtoHistoryRegistry();
+  const state = getRtoClusterState(registry, clusterId);
+  const target = resolveRtoTarget(policyRegistry, clusterId, namespace);
+  const record = findOpenRtoEvent(state.events, namespace) || {
+    id: createRtoEventId(),
+    namespace,
+    createdAt: approvedAt,
+  };
+
+  record.approvedAt ||= approvedAt;
+  record.targetRtoMinutes ??= target.targetRtoMinutes;
+  record.targetRtoLabel ||= target.targetRtoLabel;
+  record.updatedAt = approvedAt;
+
+  if (!state.events.includes(record)) {
+    state.events.unshift(record);
+  }
+
+  trimRtoHistory(registry);
+  await writeRtoHistoryRegistry(registry);
+}
+
+async function recordRestoreStarted(clusterId, input, restoreStartedAt) {
+  const namespace = input.namespaces[0];
+  const policyRegistry = await readRecoveryPolicyRegistry();
+  const registry = await readRtoHistoryRegistry();
+  const state = getRtoClusterState(registry, clusterId);
+  const target = resolveRtoTarget(policyRegistry, clusterId, namespace);
+  const record = findOpenRtoEvent(state.events, namespace) || {
+    id: createRtoEventId(),
+    namespace,
+    createdAt: restoreStartedAt,
+  };
+
+  Object.assign(record, {
+    restoreName: input.restoreName,
+    backupName: input.backupName,
+    targetClusterId: input.targetClusterId,
+    restoreStartedAt: record.restoreStartedAt || restoreStartedAt,
+    targetRtoMinutes: record.targetRtoMinutes ?? target.targetRtoMinutes,
+    targetRtoLabel: record.targetRtoLabel || target.targetRtoLabel,
+    updatedAt: restoreStartedAt,
+  });
+
+  if (!state.events.includes(record)) {
+    state.events.unshift(record);
+  }
+
+  trimRtoHistory(registry);
+  await writeRtoHistoryRegistry(registry);
+}
+
+async function recordRestoreCompletion(restore) {
+  const restoreName = restore?.restoreName;
+  const phase = restore?.status || restore?.phase;
+  const completedAt = restore?.completionTimestamp || restore?.updatedAt;
+
+  if (!restoreName || phase !== 'Completed' || !completedAt) {
+    return;
+  }
+
+  const registry = await readRtoHistoryRegistry();
+  let changed = false;
+
+  Object.values(registry.clusters).forEach((state) => {
+    (state.events || []).forEach((event) => {
+      if (event.restoreName === restoreName && !event.restoreCompletedAt) {
+        event.restoreCompletedAt = completedAt;
+        event.updatedAt = completedAt;
+        changed = true;
+      }
+    });
+  });
+
+  if (changed) {
+    trimRtoHistory(registry);
+    await writeRtoHistoryRegistry(registry);
+  }
+}
+
+function toPublicRtoEvent(event) {
+  const startedAt = event.alertDetectedAt || event.restoreStartedAt;
+  const actualRtoMinutes = startedAt && event.restoreCompletedAt
+    ? roundOneDecimal((new Date(event.restoreCompletedAt).getTime() - new Date(startedAt).getTime()) / 60000)
+    : null;
+  const targetRtoMinutes = event.targetRtoMinutes ?? parseDurationToMinutes(event.targetRtoLabel);
+
+  return {
+    restoreName: event.restoreName,
+    namespace: event.namespace,
+    alertDetectedAt: event.alertDetectedAt,
+    recommendationAt: event.recommendationAt,
+    approvedAt: event.approvedAt,
+    restoreStartedAt: event.restoreStartedAt,
+    restoreCompletedAt: event.restoreCompletedAt,
+    actualRtoMinutes,
+    targetRtoMinutes,
+    achieved: actualRtoMinutes !== null && targetRtoMinutes !== null ? actualRtoMinutes <= targetRtoMinutes : null,
+  };
+}
+
+function findOpenRtoEvent(events, namespace) {
+  return events
+    .filter((event) => event.namespace === namespace && !event.restoreCompletedAt)
+    .sort((left, right) => getRtoEventSortTime(right) - getRtoEventSortTime(left))[0] || null;
+}
+
+function resolveRtoSourceClusterId(clusterId) {
+  return managementClusterIds.has(clusterId) ? clusterId : 'cloud-primary';
+}
+
+function resolveRtoTarget(policyRegistry, clusterId, namespace) {
+  const policy = getRecoveryPolicyClusterState(policyRegistry, clusterId).policies
+    .find((candidate) => candidate.namespace === namespace);
+
+  return {
+    targetRtoMinutes: parseDurationToMinutes(policy?.rto),
+    targetRtoLabel: policy?.rto || null,
+  };
+}
+
+function trimRtoHistory(registry) {
+  Object.values(registry.clusters).forEach((state) => {
+    state.events = (state.events || [])
+      .sort((left, right) => getRtoEventSortTime(right) - getRtoEventSortTime(left))
+      .slice(0, rtoHistoryLimit);
+  });
+}
+
+function getRtoEventSortTime(event) {
+  return new Date(
+    event.restoreCompletedAt ||
+    event.restoreStartedAt ||
+    event.approvedAt ||
+    event.recommendationAt ||
+    event.alertDetectedAt ||
+    event.updatedAt ||
+    event.createdAt ||
+    0,
+  ).getTime();
+}
+
+function createRtoEventId() {
+  return `rto-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+}
+
+function normalizeRtoId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]+$/.test(value) ? value : createRtoEventId();
+}
+
+function normalizeOptionalRtoResource(value) {
+  return typeof value === 'string' && resourceNamePattern.test(value) ? value : null;
+}
+
+function normalizeOptionalRtoText(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 120 || /[\r\n]/.test(value)) {
+    return null;
+  }
+
+  return value.trim();
+}
+
+function normalizeOptionalRtoTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeOptionalRtoNumber(value) {
+  const number = Number(value);
+
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function parseDurationToMinutes(value) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const text = String(value).trim().toLowerCase();
+  const colonMatch = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+
+  if (colonMatch) {
+    const hours = colonMatch[3] ? Number.parseInt(colonMatch[1], 10) : 0;
+    const minutes = Number.parseInt(colonMatch[3] ? colonMatch[2] : colonMatch[1], 10);
+    const seconds = Number.parseInt(colonMatch[3] || colonMatch[2], 10);
+
+    return roundOneDecimal((hours * 60) + minutes + (seconds / 60));
+  }
+
+  const unitMatch = text.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+
+  if (unitMatch && text) {
+    const hours = Number.parseInt(unitMatch[1] || '0', 10);
+    const minutes = Number.parseInt(unitMatch[2] || '0', 10);
+    const seconds = Number.parseInt(unitMatch[3] || '0', 10);
+
+    return roundOneDecimal((hours * 60) + minutes + (seconds / 60));
+  }
+
+  const numeric = Number(text);
+
+  return Number.isFinite(numeric) && numeric >= 0 ? roundOneDecimal(numeric) : null;
+}
+
+function roundOneDecimal(value) {
+  return Math.round(value * 10) / 10;
 }
 
 function normalizeRecoveryPolicies(input) {
@@ -1950,11 +2396,19 @@ function buildBackupManifest(input) {
   };
 }
 
-function buildRestoreManifest(input) {
+function buildRestoreManifest(input, sourceClusterId) {
   const spec = {
     backupName: input.backupName,
     includedNamespaces: input.namespaces,
   };
+
+  if (sourceClusterId && Array.isArray(input.namespaces)) {
+    const mapping = {};
+    input.namespaces.forEach((ns) => {
+      mapping[ns] = `tenant-${sourceClusterId}-${ns}`;
+    });
+    spec.namespaceMapping = mapping;
+  }
 
   if (Object.keys(input.labels).length > 0) {
     spec.labelSelector = {
@@ -2352,6 +2806,21 @@ function getRoute(method, pathname) {
       return {
         handler: approveRecoveryRecommendation,
         params: { clusterId, workloadId },
+      };
+    }
+
+    return null;
+  }
+
+  const rtoHistoryMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/rto-history$/);
+
+  if (rtoHistoryMatch) {
+    const [, clusterId] = rtoHistoryMatch;
+
+    if (method === 'GET') {
+      return {
+        handler: getRtoHistory,
+        params: { clusterId },
       };
     }
 

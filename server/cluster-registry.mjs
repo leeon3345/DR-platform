@@ -128,7 +128,7 @@ export function toRuntimeCluster(profile) {
   return {
     ...profile,
     ssh: {
-      host: profile.ssh.host || sshDefaults.host,
+      host: process.env.DR_SSH_HOST_OVERRIDE || profile.ssh.host || sshDefaults.host,
       user: profile.ssh.user || sshDefaults.user,
       port: profile.ssh.port,
     },

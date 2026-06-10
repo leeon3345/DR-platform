@@ -1,6 +1,6 @@
 image:
-  repository: dr-agent
-  tag: latest
+  repository: ttl.sh/dr-platform-agent
+  tag: 24h
   pullPolicy: IfNotPresent
 
 agent:

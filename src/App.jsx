@@ -23,6 +23,8 @@ import {
   loadEventHistory,
   loadLatestEvent,
   loadRestoreStatus,
+  loadRtoHistory,
+  deleteCluster,
 } from "./api";
 
 const statusStyles = {
@@ -138,7 +140,7 @@ const clusterScenarios = [
       "`auth-service`, `api-gateway`, `payment-api`를 Edge K3s에 우선 복구하고, 데이터 일관성 검증 후 DNS 전환 승인을 요청합니다.",
     stream: [
       ["02:14:08", "Cloud K8s 장애 이벤트 발생", "bg-red-500"],
-      ["02:14:11", "Zabbix가 Webhook Alert 전송", "bg-amber-500"],
+      ["02:14:11", "Prometheus가 Webhook Alert 전송", "bg-amber-500"],
       ["02:14:15", "AI Orchestrator가 복구 우선순위 분석", "bg-sky-500"],
       ["02:14:32", "MinIO에서 Velero Restore 데이터 스트리밍", "bg-violet-500"],
       ["02:15:02", "Edge K3s에서 핵심 워크로드 복원 중", "bg-emerald-500"],
@@ -153,7 +155,7 @@ const clusterScenarios = [
           ["Impact", "Core traffic down"],
         ],
       },
-      zabbix: {
+      prometheus: {
         status: "alerting",
         detail: "Critical trigger is open",
         metrics: [
@@ -210,7 +212,7 @@ const clusterScenarios = [
       "`settlement-api`와 `ledger-worker`를 대기 복구 후보로 유지하고, DB 스냅샷 정합성이 확인되면 Edge K3s 복구를 승인합니다.",
     stream: [
       ["02:09:18", "정산 워크로드 latency 경고 발생", "bg-amber-500"],
-      ["02:09:24", "Zabbix가 Warning Trigger 수집", "bg-amber-500"],
+      ["02:09:24", "Prometheus가 Warning Trigger 수집", "bg-amber-500"],
       ["02:09:35", "AI Orchestrator가 의존성 그래프 분석", "bg-sky-500"],
       ["02:10:02", "MinIO 백업 무결성 확인 완료", "bg-emerald-500"],
       ["02:10:31", "Edge K3s 복구 리소스 예약", "bg-violet-500"],
@@ -225,7 +227,7 @@ const clusterScenarios = [
           ["Impact", "Settlement delayed"],
         ],
       },
-      zabbix: {
+      prometheus: {
         status: "alerting",
         detail: "Latency warning is open",
         metrics: [
@@ -282,7 +284,7 @@ const clusterScenarios = [
       "장애 징후가 없어 자동 복구는 보류합니다. 복구 훈련 요청 시 `catalog-api`와 `inventory-cache`를 우선 복원합니다.",
     stream: [
       ["02:02:04", "정기 헬스체크 정상", "bg-emerald-500"],
-      ["02:02:16", "Zabbix heartbeat 수신", "bg-emerald-500"],
+      ["02:02:16", "Prometheus heartbeat 수신", "bg-emerald-500"],
       ["02:02:41", "MinIO 백업 객체 검증 완료", "bg-emerald-500"],
       ["02:03:09", "AI Orchestrator가 Drill Plan 갱신", "bg-sky-500"],
       ["02:03:30", "Edge K3s 복구 타깃 대기 중", "bg-violet-500"],
@@ -297,7 +299,7 @@ const clusterScenarios = [
           ["Impact", "None"],
         ],
       },
-      zabbix: {
+      prometheus: {
         status: "safe",
         detail: "Heartbeat is healthy",
         metrics: [
@@ -356,12 +358,12 @@ const baseFlowNodes = [
     },
   },
   {
-    id: "zabbix",
+    id: "prometheus",
     type: "drNode",
     position: { x: 430, y: 42 },
     data: {
       icon: "pulse",
-      label: "Zabbix",
+      label: "Prometheus",
       subtitle: "Monitoring system",
       status: "alerting",
       detail: "Critical trigger is open",
@@ -427,10 +429,10 @@ const baseFlowNodes = [
 
 const flowEdges = [
   {
-    id: "cloud-to-zabbix",
+    id: "cloud-to-prometheus",
     source: "cloud-k8s",
     sourceHandle: "right",
-    target: "zabbix",
+    target: "prometheus",
     targetHandle: "left",
     type: "labeled",
     animated: true,
@@ -455,8 +457,8 @@ const flowEdges = [
     style: { stroke: "#64748b", strokeWidth: 2.25 },
   },
   {
-    id: "zabbix-to-ai",
-    source: "zabbix",
+    id: "prometheus-to-ai",
+    source: "prometheus",
     sourceHandle: "right",
     target: "ai-orchestrator",
     targetHandle: "left",
@@ -751,7 +753,7 @@ function getAlertTargetNodes(alert) {
   }
 
   if (alert.source === "alertmanager") {
-    targets.add("zabbix");
+    targets.add("prometheus");
   }
 
   return targets;
@@ -784,9 +786,9 @@ function getAlertTopologyState(events, now = Date.now()) {
       const isCritical = event.severity === "critical";
 
       nodes[nodeId] = {
-        status: nodeId === "zabbix" ? "alerting" : isCritical ? "outage" : "warning",
+        status: nodeId === "prometheus" ? "alerting" : isCritical ? "outage" : "warning",
         detail:
-          nodeId === "zabbix"
+          nodeId === "prometheus"
             ? `${event.alertname} webhook received`
             : `${event.alertname} is ${event.status} for ${event.namespace || event.clusterId || "cluster"}`,
         metrics: buildAlertMetrics(event),
@@ -1547,7 +1549,7 @@ function buildDashboardClusters(apiResults, apiLoading, alertEvents = []) {
       errorDetail: "Cloud K8s status API unavailable",
       safeDetail: "Cloud K8s node is Ready",
     }),
-    zabbix: {
+    prometheus: {
       status: apiLoading ? "analyzing" : safeErrors.length || validationIssues.length ? "alerting" : "safe",
       detail: apiLoading ? "Waiting for backend status responses" : safeErrors.length || validationIssues.length ? "One or more backend probes failed safely" : "Backend status APIs responding",
       metrics: [
@@ -1836,6 +1838,7 @@ function getRecommendationRank(recommendation, index) {
 }
 
 const terminalRestoreStatuses = new Set(["Completed", "Failed"]);
+const requireDashboardToken = import.meta.env.VITE_REQUIRE_DASHBOARD_TOKEN === "true";
 const restoreProgressByStatus = {
   PendingAgent: 15,
   Submitted: 35,
@@ -2052,6 +2055,292 @@ function RestoreProgressPanel({ operation, clock, incidentStartedAt, rtoTarget, 
   );
 }
 
+function getRtoHistoryEvents(payload) {
+  return asArray(payload, ["history"]);
+}
+
+function formatRtoMinutes(minutes) {
+  if (!Number.isFinite(minutes)) {
+    return "-";
+  }
+
+  return formatDuration(minutes * 60 * 1000);
+}
+
+function hasRtoNumber(value) {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+}
+
+function formatRtoChartLabel(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return date.toLocaleString("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function getRtoStageOffset(event, timestamp) {
+  if (!timestamp) {
+    return "대기 중";
+  }
+
+  const startTime = new Date(event.alertDetectedAt || timestamp).getTime();
+  const eventTime = new Date(timestamp).getTime();
+
+  if (!Number.isFinite(startTime) || !Number.isFinite(eventTime) || timestamp === event.alertDetectedAt) {
+    return formatTime(timestamp);
+  }
+
+  return `+${formatDuration(eventTime - startTime)}`;
+}
+
+function getRtoTimelineStages(event) {
+  return [
+    ["장애 감지", "Prometheus Alert", event.alertDetectedAt, "bg-red-500"],
+    ["AI 추천 생성 완료", "Recovery policy scoring", event.recommendationAt, "bg-sky-500"],
+    ["운영자 승인", "Human-in-the-loop", event.approvedAt, "bg-emerald-500"],
+    ["Velero Restore 시작", event.restoreName || "Restore accepted", event.restoreStartedAt, "bg-violet-500"],
+    ["복구 완료", "Edge K3s recovered", event.restoreCompletedAt, "bg-emerald-500"],
+  ];
+}
+
+function getCurrentRtoMilliseconds(event, clock) {
+  const start = event?.alertDetectedAt || event?.restoreStartedAt;
+  const end = event?.restoreCompletedAt;
+
+  if (!start) {
+    return null;
+  }
+
+  const startTime = new Date(start).getTime();
+  const endTime = end ? new Date(end).getTime() : clock;
+
+  return Number.isFinite(startTime) && Number.isFinite(endTime) ? endTime - startTime : null;
+}
+
+function RtoHistoryChart({ events }) {
+  const completedEvents = events
+    .filter((event) => hasRtoNumber(event.actualRtoMinutes))
+    .slice(0, 8)
+    .reverse();
+
+  if (completedEvents.length === 0) {
+    return (
+      <div className="flex min-h-[220px] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-4 py-8 text-sm font-semibold text-slate-500">
+        복구 이력 없음
+      </div>
+    );
+  }
+
+  const width = 640;
+  const height = 240;
+  const padding = { top: 18, right: 28, bottom: 48, left: 50 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(
+    1,
+    ...completedEvents.flatMap((event) => [
+      Number(event.actualRtoMinutes) || 0,
+      hasRtoNumber(event.targetRtoMinutes) ? Number(event.targetRtoMinutes) : 0,
+    ]),
+  );
+  const slot = plotWidth / completedEvents.length;
+  const barWidth = Math.min(42, slot * 0.56);
+  const yFor = (minutes) => padding.top + plotHeight - ((Number(minutes) || 0) / maxValue) * plotHeight;
+  const targetPoints = completedEvents
+    .map((event, index) => {
+      if (!hasRtoNumber(event.targetRtoMinutes)) {
+        return null;
+      }
+
+      const x = padding.left + (slot * index) + (slot / 2);
+      return `${x},${yFor(event.targetRtoMinutes)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <div className="overflow-x-auto">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="RTO history actual versus target chart" className="min-w-[560px]">
+        <line x1={padding.left} y1={padding.top + plotHeight} x2={width - padding.right} y2={padding.top + plotHeight} stroke="#cbd5e1" />
+        <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + plotHeight} stroke="#cbd5e1" />
+        {[0, 0.5, 1].map((ratio) => {
+          const y = padding.top + plotHeight - (plotHeight * ratio);
+          const label = Math.round(maxValue * ratio);
+
+          return (
+            <g key={ratio}>
+              <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="#e2e8f0" strokeDasharray="4 6" />
+              <text x={padding.left - 10} y={y + 4} textAnchor="end" className="fill-slate-400 text-[11px] font-bold">
+                {label}m
+              </text>
+            </g>
+          );
+        })}
+        {targetPoints && (
+          <polyline points={targetPoints} fill="none" stroke="#64748b" strokeWidth="2" strokeDasharray="6 6" />
+        )}
+        {completedEvents.map((event, index) => {
+          const x = padding.left + (slot * index) + ((slot - barWidth) / 2);
+          const y = yFor(event.actualRtoMinutes);
+          const barHeight = padding.top + plotHeight - y;
+          const achieved = event.achieved === true;
+          const exceeded = event.achieved === false;
+
+          return (
+            <g key={`${event.restoreName || event.namespace}-${index}`}>
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barHeight}
+                rx="4"
+                fill={achieved ? "#10b981" : exceeded ? "#ef4444" : "#64748b"}
+              />
+              <text x={x + (barWidth / 2)} y={Math.max(14, y - 6)} textAnchor="middle" className="fill-slate-700 text-[11px] font-black">
+                {Number(event.actualRtoMinutes).toFixed(1)}m
+              </text>
+              <text
+                x={x + (barWidth / 2)}
+                y={height - 22}
+                textAnchor="middle"
+                className="fill-slate-500 text-[10px] font-bold"
+              >
+                {formatRtoChartLabel(event.restoreCompletedAt || event.restoreStartedAt)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function RtoMeasurementPanel({ history, loading, error, clock, onRefresh }) {
+  const latest = history[0] || null;
+  const currentRto = latest ? getCurrentRtoMilliseconds(latest, clock) : null;
+  const targetMilliseconds = hasRtoNumber(latest?.targetRtoMinutes)
+    ? Number(latest.targetRtoMinutes) * 60 * 1000
+    : null;
+  const achieved =
+    latest?.actualRtoMinutes !== null && latest?.actualRtoMinutes !== undefined && targetMilliseconds !== null
+      ? Number(latest.actualRtoMinutes) * 60 * 1000 <= targetMilliseconds
+      : null;
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-black text-slate-950">
+            <Icon name="pulse" className="h-4 w-4 text-emerald-600" />
+            RTO 타임라인{latest?.namespace ? ` · ${latest.namespace}` : ""}
+          </h2>
+          <p className="text-xs font-medium text-slate-500">장애 감지부터 Edge K3s 복구 완료까지의 측정값</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="inline-flex w-fit items-center justify-center rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm transition hover:bg-slate-50"
+        >
+          새로고침
+        </button>
+      </div>
+
+      {loading && (
+        <div className="mt-5 rounded-md border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+          RTO 이력을 불러오는 중입니다.
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+          RTO 이력을 불러오지 못했습니다. API 서버 상태를 확인하세요.
+        </div>
+      )}
+
+      {!loading && !error && !latest && (
+        <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-semibold text-slate-600">
+          복구 이력 없음
+        </div>
+      )}
+
+      {!loading && !error && latest && (
+        <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(380px,0.85fr)]">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <ol className="space-y-4">
+              {getRtoTimelineStages(latest).map(([label, detail, timestamp, dotColor], index) => (
+                <li key={label} className="grid grid-cols-[88px_1fr] gap-3">
+                  <span className="pt-0.5 text-xs font-black text-slate-500">{getRtoStageOffset(latest, timestamp)}</span>
+                  <div className="relative rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm">
+                    {index < 4 && <i className="absolute -left-[48px] top-5 h-[calc(100%+16px)] w-px bg-slate-200" />}
+                    <i className={`absolute -left-[52px] top-3 h-2.5 w-2.5 rounded-full ${timestamp ? dotColor : "bg-slate-300"} ring-4 ring-slate-50`} />
+                    <strong className="block text-slate-950">{label}</strong>
+                    <span className="mt-0.5 block text-xs font-semibold text-slate-500">{timestamp ? detail : "아직 기록되지 않음"}</span>
+                  </div>
+                </li>
+              ))}
+            </ol>
+
+            <div className="mt-5 grid gap-2 sm:grid-cols-3">
+              <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                <span className="block text-xs font-black uppercase text-slate-400">실제 RTO</span>
+                <strong className="text-slate-950">
+                  {latest.actualRtoMinutes !== null && latest.actualRtoMinutes !== undefined
+                    ? formatRtoMinutes(Number(latest.actualRtoMinutes))
+                    : currentRto !== null
+                      ? `${formatDuration(currentRto)} 진행 중`
+                      : "-"}
+                </strong>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                <span className="block text-xs font-black uppercase text-slate-400">목표 RTO</span>
+                <strong className="text-slate-950">
+                  {hasRtoNumber(latest.targetRtoMinutes) ? formatRtoMinutes(Number(latest.targetRtoMinutes)) : "-"}
+                </strong>
+              </div>
+              <div className={`rounded-md border px-3 py-2 ${
+                achieved === true
+                  ? "border-emerald-200 bg-emerald-50"
+                  : achieved === false
+                    ? "border-red-200 bg-red-50"
+                    : "border-slate-200 bg-white"
+              }`}
+              >
+                <span className="block text-xs font-black uppercase text-slate-400">판정</span>
+                <strong className="text-slate-950">{achieved === null ? "측정 중" : achieved ? "달성" : "초과"}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-black text-slate-950">RTO History</h3>
+              <div className="flex items-center gap-3 text-[11px] font-bold text-slate-500">
+                <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-sm bg-emerald-500" />달성</span>
+                <span className="inline-flex items-center gap-1"><i className="h-2 w-2 rounded-sm bg-red-500" />초과</span>
+                <span className="inline-flex items-center gap-1"><i className="h-px w-5 border-t border-dashed border-slate-500" />목표</span>
+              </div>
+            </div>
+            <RtoHistoryChart events={history} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RecoveryRecommendationPanel({
   recommendations,
   loading,
@@ -2211,7 +2500,7 @@ function RecoveryRecommendationPanel({
   );
 }
 
-function ClusterList({ clusters, activeClusterId, onSelect }) {
+function ClusterList({ clusters, activeClusterId, onSelect, onDelete }) {
   return (
     <aside className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between gap-3">
@@ -2252,10 +2541,22 @@ function ClusterList({ clusters, activeClusterId, onSelect }) {
                     {cluster.provider} · {cluster.region}
                   </div>
                 </div>
-                <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-bold ring-1 ${cluster.statusBadge}`}>
-                  <span className={`h-2 w-2 rounded-full ${cluster.statusDot}`} />
-                  {cluster.status}
-                </span>
+                <div className="flex flex-col items-end gap-2">
+                  <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-bold ring-1 ${cluster.statusBadge}`}>
+                    <span className={`h-2 w-2 rounded-full ${cluster.statusDot}`} />
+                    {cluster.status}
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(cluster.id);
+                    }}
+                    className="rounded text-[11px] font-bold text-red-500 hover:bg-red-50 hover:text-red-600 px-2 py-1 border border-red-200 transition"
+                    title="영구 삭제"
+                  >
+                    삭제
+                  </button>
+                </div>
               </div>
 
               <div className="mt-3 grid grid-cols-3 gap-2 text-center">
@@ -2283,6 +2584,7 @@ function ClusterList({ clusters, activeClusterId, onSelect }) {
 function Dashboard() {
   const [dashboardToken] = useState(() => initializeDashboardToken());
   const [activeClusterId, setActiveClusterId] = useState(clusterScenarios[0].id);
+  const [topologyTab, setTopologyTab] = useState("architecture");
   const [apiResults, setApiResults] = useState(null);
   const [apiLoading, setApiLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -2292,6 +2594,10 @@ function Dashboard() {
   const [recoveredWorkloadId, setRecoveredWorkloadId] = useState(null);
   const [restoreOperation, setRestoreOperation] = useState(null);
   const [restoreClock, setRestoreClock] = useState(Date.now());
+  const [rtoHistory, setRtoHistory] = useState([]);
+  const [rtoLoading, setRtoLoading] = useState(true);
+  const [rtoError, setRtoError] = useState(null);
+  const [rtoReloadNonce, setRtoReloadNonce] = useState(0);
   const [approvalError, setApprovalError] = useState(null);
   const [alertEvents, setAlertEvents] = useState([]);
   const [eventClock, setEventClock] = useState(Date.now());
@@ -2372,6 +2678,34 @@ function Dashboard() {
 
     return () => controller.abort();
   }, [dashboardToken, reloadNonce]);
+
+  useEffect(() => {
+    if (!dashboardToken) {
+      setRtoLoading(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    setRtoLoading(true);
+    loadRtoHistory("cloud-primary", { signal: controller.signal })
+      .then((payload) => {
+        setRtoHistory(getRtoHistoryEvents(payload));
+        setRtoError(null);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) {
+          setRtoError(error.message);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setRtoLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [dashboardToken, rtoReloadNonce]);
 
   useEffect(() => {
     if (!dashboardToken) {
@@ -2457,6 +2791,7 @@ function Dashboard() {
 
           if (phase === "Completed") {
             setRecoveredWorkloadId(restoreOperation.workloadId);
+            setRtoReloadNonce((value) => value + 1);
           }
         }
       } catch (error) {
@@ -2543,6 +2878,7 @@ function Dashboard() {
       });
       setRestoreClock(Date.now());
       setReloadNonce((value) => value + 1);
+      setRtoReloadNonce((value) => value + 1);
     } catch (error) {
       setApprovalError(error.message);
     } finally {
@@ -2556,9 +2892,20 @@ function Dashboard() {
     }
   }, [activeClusterId, dashboardClusters]);
 
-  if (!dashboardToken) {
+  if (requireDashboardToken && !dashboardToken) {
     return <RegistrationGuidance />;
   }
+
+  const handleDeleteCluster = async (clusterId) => {
+    if (window.confirm("정말 이 클러스터를 대시보드에서 영구적으로 삭제하시겠습니까?")) {
+      try {
+        await deleteCluster(clusterId);
+        window.location.reload();
+      } catch (err) {
+        alert("삭제 중 오류가 발생했습니다: " + err.message);
+      }
+    }
+  };
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-950">
@@ -2606,14 +2953,28 @@ function Dashboard() {
             clusters={dashboardClusters}
             activeClusterId={activeCluster.id}
             onSelect={setActiveClusterId}
+            onDelete={handleDeleteCluster}
           />
 
           <div className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <div>
-                <h2 className="text-sm font-black text-slate-950">Recovery Flow Topology</h2>
-                <p className="text-xs font-medium text-slate-500">
-                  {activeCluster.provider} · {activeCluster.region} · selected cluster topology
+                <div className="flex gap-4">
+                  <button 
+                    onClick={() => setTopologyTab("architecture")}
+                    className={`text-sm font-black pb-1 border-b-2 ${topologyTab === "architecture" ? "border-indigo-600 text-slate-950" : "border-transparent text-slate-400"}`}
+                  >
+                    Architecture Flow
+                  </button>
+                  <button 
+                    onClick={() => setTopologyTab("user-cluster")}
+                    className={`text-sm font-black pb-1 border-b-2 ${topologyTab === "user-cluster" ? "border-indigo-600 text-slate-950" : "border-transparent text-slate-400"}`}
+                  >
+                    User Cluster Map
+                  </button>
+                </div>
+                <p className="text-xs font-medium text-slate-500 mt-1">
+                  {activeCluster.provider} · {activeCluster.region} · {topologyTab === "architecture" ? "Architecture workflow" : "Live cluster topology"}
                 </p>
               </div>
               <div className="hidden items-center gap-3 text-xs font-bold text-slate-500 md:flex">
@@ -2624,6 +2985,7 @@ function Dashboard() {
             </div>
 
             <div className="h-[660px] w-full bg-slate-50">
+              {topologyTab === "architecture" ? (
               <ReactFlow
                 key={activeCluster.id}
                 nodes={activeNodes}
@@ -2651,6 +3013,9 @@ function Dashboard() {
                   </div>
                 </Panel>
               </ReactFlow>
+            ) : (
+              <UserClusterTopology apiResults={apiResults} nodeTypes={nodeTypes} edgeTypes={edgeTypes} />
+            )}
             </div>
           </div>
 
@@ -2701,6 +3066,14 @@ function Dashboard() {
           onRetry={handleApproveRecommendation}
         />
 
+        <RtoMeasurementPanel
+          history={rtoHistory}
+          loading={rtoLoading}
+          error={rtoError}
+          clock={restoreClock}
+          onRefresh={() => setRtoReloadNonce((value) => value + 1)}
+        />
+
         <RecoveryRecommendationPanel
           recommendations={recommendations}
           loading={apiLoading}
@@ -2730,3 +3103,62 @@ function App() {
 }
 
 export default App;
+
+function UserClusterTopology({ apiResults, nodeTypes, edgeTypes }) {
+  const topology = getApiResult(apiResults, "cloudTopology");
+  
+  const nodes = useMemo(() => {
+    if (!topology || !topology.nodes) return [];
+    return topology.nodes.map((n, i) => ({
+      id: n.id,
+      type: "drNode",
+      position: { x: 100 + (i * 400), y: 200 },
+      data: {
+        icon: n.type === "cloud-k8s" ? "cloud" : "edge",
+        label: n.label || n.id,
+        subtitle: n.type,
+        status: "safe",
+        detail: "Live agent connection",
+        metrics: [
+          ["IP", n.nodeIp || "N/A"],
+          ["Node", n.nodeName || "N/A"],
+        ],
+      }
+    }));
+  }, [topology]);
+
+  const edges = useMemo(() => {
+    if (!topology || !topology.edges) return [];
+    return topology.edges.map((e, i) => ({
+      id: `edge-${i}`,
+      source: e.source,
+      target: e.target,
+      type: "labeled",
+      animated: true,
+      label: e.relationship,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#64748b" },
+      style: { stroke: "#64748b", strokeWidth: 2 },
+      data: { labelOffset: { x: 0, y: -20 }, labelTone: "neutral" },
+    }));
+  }, [topology]);
+
+  if (!topology || !topology.nodes) {
+    return <div className="flex h-full items-center justify-center text-sm font-medium text-slate-500">No live topology data available</div>;
+  }
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
+      fitView
+      fitViewOptions={{ padding: 0.3 }}
+      nodesDraggable={false}
+      nodesConnectable={false}
+    >
+      <Background color="#94a3b8" gap={18} size={1.25} variant="dots" />
+      <Controls showInteractive={false} />
+    </ReactFlow>
+  );
+}

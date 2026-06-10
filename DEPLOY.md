@@ -64,10 +64,16 @@ Copy the API and dashboard URLs printed by zrok. Keep zrok account tokens, share
 
 ## 5. Register An Operator
 
-Use the API zrok URL for CLI registration:
+First, download and install `drctl` from your platform:
 
 ```bash
-drctl init --platform <api-zrok-url> --name <your-org>
+curl -sL <api-zrok-url>/api/download/install.sh | bash
+```
+
+Then, use the API zrok URL for CLI registration:
+
+```bash
+drctl init --platform <api-zrok-url> --name my-organization
 ```
 
 The command stores the issued user token in the local `drctl` config and prints a dashboard URL containing that token.

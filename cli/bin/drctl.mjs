@@ -495,4 +495,7 @@ class CliError extends Error {
   }
 }
 
-await program.parseAsync();
+program.parseAsync().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -14,7 +14,8 @@
       "port": 2222
     },
     "kubernetes": {
-      "accessMode": "kubectl"
+      "accessMode": "kubectl",
+      "sudo": false
     },
     "capabilities": {
       "nodeStatus": true,
@@ -25,8 +26,14 @@
       "restorePreview": true,
       "restoreExecute": false,
       "restoreStatus": false,
+      "workloads": true,
+      "metrics": true,
+      "backupFreshness": true,
+      "restoreReadiness": false,
+      "topology": true,
       "minio": false
-    }
+    },
+    "owner": null
   },
   {
     "id": "edge-recovery",
@@ -55,7 +62,186 @@
       "restorePreview": false,
       "restoreExecute": true,
       "restoreStatus": true,
+      "workloads": true,
+      "metrics": true,
+      "backupFreshness": false,
+      "restoreReadiness": true,
+      "topology": true,
       "minio": true
+    },
+    "owner": null
+  },
+  {
+    "id": "task18-agent-cloud",
+    "displayName": "task18-agent-cloud",
+    "kind": "user-k8s",
+    "provider": "User Cluster",
+    "environment": "External user cluster",
+    "nodeName": "k8s-master",
+    "nodeIp": "agent-reported",
+    "sshProfileRef": null,
+    "ssh": null,
+    "kubernetes": {
+      "accessMode": "agent",
+      "sudo": false
+    },
+    "capabilities": {
+      "nodeStatus": true,
+      "velero": true,
+      "backupHistory": true,
+      "backupCreate": false,
+      "backupStatus": false,
+      "restorePreview": false,
+      "restoreExecute": true,
+      "restoreStatus": true,
+      "workloads": true,
+      "metrics": true,
+      "backupFreshness": true,
+      "restoreReadiness": true,
+      "topology": true,
+      "minio": false
+    },
+    "owner": "sha256:31514bec8133ff735060bf8731749268ef1b261cd5c4c4b42bb98748d4196144",
+    "agent": {
+      "agentAuthHash": "sha256:31514bec8133ff735060bf8731749268ef1b261cd5c4c4b42bb98748d4196144",
+      "registeredAt": "2026-06-10T11:29:57.671Z",
+      "lastHeartbeatAt": "2026-06-10T13:49:47.142Z",
+      "lastCollectedAt": "2026-06-10T13:49:44.711Z",
+      "state": {
+        "nodes": [
+          {
+            "name": "k8s-master",
+            "status": "Ready",
+            "version": "v1.36.1"
+          }
+        ],
+        "workloads": {
+          "runningPods": 10,
+          "pendingPods": 0,
+          "failedPods": 0,
+          "namespaces": [
+            "dr-agent",
+            "kube-flannel",
+            "kube-system",
+            "velero"
+          ]
+        },
+        "backups": [
+          {
+            "name": "pre-chaos-1781091552",
+            "phase": "Completed",
+            "timestamp": "2026-06-10T11:39:13.000Z"
+          },
+          {
+            "name": "user-k8s-smoke-001",
+            "phase": "Completed",
+            "timestamp": "2026-06-09T13:42:36.000Z"
+          },
+          {
+            "name": "task1-smoke-20260607012840",
+            "phase": "Completed",
+            "timestamp": "2026-06-07T01:28:41.000Z"
+          }
+        ]
+      },
+      "restoreStatuses": {}
+    }
+  },
+  {
+    "id": "my-cluster",
+    "displayName": "my-cluster",
+    "kind": "user-k8s",
+    "provider": "User Cluster",
+    "environment": "External user cluster",
+    "nodeName": "k8s-master",
+    "nodeIp": "agent-reported",
+    "sshProfileRef": null,
+    "ssh": null,
+    "kubernetes": {
+      "accessMode": "agent",
+      "sudo": false
+    },
+    "capabilities": {
+      "nodeStatus": true,
+      "velero": true,
+      "backupHistory": true,
+      "backupCreate": false,
+      "backupStatus": false,
+      "restorePreview": false,
+      "restoreExecute": true,
+      "restoreStatus": true,
+      "workloads": true,
+      "metrics": true,
+      "backupFreshness": true,
+      "restoreReadiness": true,
+      "topology": true,
+      "minio": false
+    },
+    "owner": "sha256:4fee89d23eea3ee5e736b33dc58331c64e14fcc14ad30758259a224e16bdc8fb",
+    "agent": {
+      "agentAuthHash": "sha256:4fee89d23eea3ee5e736b33dc58331c64e14fcc14ad30758259a224e16bdc8fb",
+      "registeredAt": "2026-06-10T15:36:31.539Z",
+      "lastHeartbeatAt": "2026-06-10T16:28:08.536Z",
+      "lastCollectedAt": "2026-06-10T16:28:06.612Z",
+      "state": {
+        "nodes": [
+          {
+            "name": "k8s-master",
+            "status": "Ready",
+            "version": "v1.30.14"
+          },
+          {
+            "name": "k8s-worker1",
+            "status": "Ready",
+            "version": "v1.30.14"
+          },
+          {
+            "name": "k8s-worker2",
+            "status": "Ready",
+            "version": "v1.30.14"
+          },
+          {
+            "name": "k8s-worker3",
+            "status": "Ready",
+            "version": "v1.30.14"
+          }
+        ],
+        "workloads": {
+          "runningPods": 59,
+          "pendingPods": 5,
+          "failedPods": 10,
+          "namespaces": [
+            "analytics",
+            "auth-service",
+            "calico-apiserver",
+            "calico-system",
+            "compliance-system",
+            "default",
+            "falco",
+            "gatekeeper-system",
+            "kube-system",
+            "local-path-storage",
+            "monitoring",
+            "order-service",
+            "runtime-demo",
+            "tigera-operator",
+            "velero"
+          ]
+        },
+        "backups": [
+          {
+            "name": "user-k8s-smoke-001",
+            "phase": "Completed",
+            "timestamp": "2026-06-09T13:42:36.000Z"
+          },
+          {
+            "name": "task1-smoke-20260607012840",
+            "phase": "Completed",
+            "timestamp": "2026-06-07T01:28:41.000Z"
+          }
+        ]
+      },
+      "restoreStatuses": {}
     }
   }
 ]

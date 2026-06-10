@@ -16,6 +16,7 @@ const INTERNAL_API_PATHS = {
   edgeTopology: "/api/clusters/edge-recovery/topology",
   cloudValidation: "/api/clusters/cloud-primary/validate",
   edgeValidation: "/api/clusters/edge-recovery/validate",
+  cloudRtoHistory: "/api/clusters/cloud-primary/rto-history",
   latestEvent: "/api/events/latest",
   eventHistory: "/api/events/history",
 };
@@ -65,9 +66,9 @@ function buildUrl(baseUrl, path) {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
-async function getJson(path, { signal } = {}) {
+async function getJson(path, { signal, auth = true } = {}) {
   let lastError = null;
-  const token = getDashboardToken();
+  const token = auth ? getDashboardToken() : "";
 
   for (const baseUrl of getApiBaseUrls()) {
     try {
@@ -158,7 +159,54 @@ export async function loadDashboardData({ signal } = {}) {
     }),
   );
 
-  return Object.fromEntries(entries);
+  const apiResults = Object.fromEntries(entries);
+
+  // If using TENANT_API_PATHS, we must dynamically populate the missing keys!
+  if (token && apiResults.clusters?.ok) {
+    const clustersList = apiResults.clusters.data?.items || apiResults.clusters.data?.clusters || [];
+    
+    if (clustersList.length > 0) {
+      // Use the user's clusters to fill out the UI
+      const primaryId = clustersList[0]?.id || "cloud-primary";
+      const recoveryId = clustersList[1]?.id || primaryId;
+
+      const dynamicPaths = {
+        cloudStatus: `/api/clusters/${encodeURIComponent(primaryId)}/status`,
+        edgeStatus: `/api/clusters/${encodeURIComponent(recoveryId)}/status`,
+        minioStatus: "/api/storage/minio/status",
+        veleroLocation: `/api/clusters/${encodeURIComponent(primaryId)}/velero/location`,
+        backups: `/api/clusters/${encodeURIComponent(primaryId)}/backups`,
+        cloudMetrics: `/api/clusters/${encodeURIComponent(primaryId)}/metrics`,
+        edgeMetrics: `/api/clusters/${encodeURIComponent(recoveryId)}/metrics`,
+        cloudWorkloads: `/api/clusters/${encodeURIComponent(primaryId)}/workloads`,
+        edgeWorkloads: `/api/clusters/${encodeURIComponent(recoveryId)}/workloads`,
+        cloudBackupFreshness: `/api/clusters/${encodeURIComponent(primaryId)}/backup-freshness`,
+        edgeRestoreReadiness: `/api/clusters/${encodeURIComponent(recoveryId)}/restore-readiness`,
+        cloudRecommendations: `/api/clusters/${encodeURIComponent(primaryId)}/recommendations`,
+        cloudTopology: `/api/clusters/${encodeURIComponent(primaryId)}/topology`,
+        edgeTopology: `/api/clusters/${encodeURIComponent(recoveryId)}/topology`,
+        cloudValidation: `/api/clusters/${encodeURIComponent(primaryId)}/validate`,
+        edgeValidation: `/api/clusters/${encodeURIComponent(recoveryId)}/validate`,
+        cloudRtoHistory: `/api/clusters/${encodeURIComponent(primaryId)}/rto-history`,
+      };
+
+      const dynamicEntries = await Promise.all(
+        Object.entries(dynamicPaths).map(async ([key, path]) => {
+          try {
+            const request = key.endsWith("Validation") ? postJson : getJson;
+            return [key, { ok: true, data: await request(path, { signal }) }];
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            return [key, { ok: false, error: `${path}: ${error.message}` }];
+          }
+        }),
+      );
+
+      Object.assign(apiResults, Object.fromEntries(dynamicEntries));
+    }
+  }
+
+  return apiResults;
 }
 
 export async function loadEventHistory({ signal } = {}) {
@@ -167,6 +215,10 @@ export async function loadEventHistory({ signal } = {}) {
 
 export async function loadLatestEvent({ signal } = {}) {
   return getJson(INTERNAL_API_PATHS.latestEvent, { signal });
+}
+
+export async function loadRtoHistory(clusterId = "cloud-primary", { signal } = {}) {
+  return getJson(`/api/clusters/${encodeURIComponent(clusterId)}/rto-history`, { signal, auth: false });
 }
 
 export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {
@@ -208,4 +260,41 @@ function toKubernetesName(value) {
     .replace(/^-+|-+$/g, "")
     .replace(/-+/g, "-")
     .slice(0, 40) || "workload";
+}
+
+async function deleteJson(path, { signal } = {}) {
+  let lastError = null;
+  const token = getDashboardToken();
+
+  for (const baseUrl of getApiBaseUrls()) {
+    try {
+      const response = await fetch(buildUrl(baseUrl, path), {
+        method: "DELETE",
+        headers: buildHeaders(token),
+        signal,
+      });
+      const text = await response.text();
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      try {
+        return text ? JSON.parse(text) : null;
+      } catch {
+        throw new Error("Invalid JSON response");
+      }
+    } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+
+  throw new Error(lastError?.message ?? "API request failed");
+}
+
+export async function deleteCluster(clusterId) {
+  return deleteJson(`/api/clusters/${encodeURIComponent(clusterId)}`);
 }
