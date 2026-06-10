@@ -54,14 +54,18 @@ Main product direction:
 - TASK-15: Landing page (`/`) with hero, architecture flow, and feature cards added. Agent installation guide page (`/download`) with step-by-step onboarding flow added. React Router routes connect `/`, `/download`, and `/dashboard`. Platform URL reads from `VITE_PLATFORM_URL`. No API calls on public pages.
 - TASK-16: Recovery Decision panel added below topology with ranked AI recommendations, explicit operator confirmation, recommendation approval, TASK-05 restore execution, same-session duplicate prevention, approved badges, manual refresh, empty/error states, and Edge K3s Restore topology state after restore trigger.
 - TASK-17: Restore Progress panel added after operator approval, with restore execution response tracking, 10-second restore status polling, 1-second elapsed timer, progress phase display, RTO actual vs target, Failed retry path, and Edge K3s Recovered topology state after completion.
+- TASK-18: Demo scenario documentation added in `docs/demo-scenario.md`, and non-destructive validation recorded in `docs/task18-test-report.md`. Alertmanager mock webhook ingestion, event history/latest APIs, and Edge K3s restore readiness were verified. Full live chaos validation remains blocked by Cloud K8s SSH timeout, missing local Velero CLI, missing local kubectl context, and no temporary dashboard token issuance.
 
 ## Current Next Task
 
 ```text
-TASK-18 should be drafted.
+TASK-18 is drafted and partially verified; full live chaos verification remains pending.
 ```
 
 Likely next focus:
+- Add RTO measurement visualization: alert detected time, operator approval/restore start, restore completed, workload ready, per-stage durations, and total RTO.
+- Re-run TASK-18 live validation after Cloud K8s SSH, kubectl context, local Velero availability, and dashboard token setup are fixed.
+- Issue a temporary dashboard token only when UI verification is needed; this may update Git-ignored runtime registry data such as `server/registry/tokens.json`.
 - Live-verify TASK-17 against a running backend and real Velero restore status transitions.
 - Add restore workload readiness checks after Velero reports completion.
 - Add richer restore history so completed progress survives page reloads.
@@ -128,6 +132,8 @@ Project/task docs:
 .context/checklist.md
 .context/checklist2.md
 .context/task8.md
+docs/demo-scenario.md
+docs/task18-test-report.md
 ```
 
 ## Lab Cluster Registry

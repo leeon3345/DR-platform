@@ -292,3 +292,59 @@ TASK-17 verified values:
 - Topology completion marker: Edge K3s node status `Recovered`.
 - Build verification: `npm run build`.
 - Build verification: `npm run build`.
+
+## TASK-18: Pod Kill Chaos Test and Demo Scenario
+
+Status: Drafted and partially verified; full live chaos verification pending
+
+- [x] Create repeatable demo script in `docs/demo-scenario.md`.
+- [x] Include prerequisites checklist for API, dashboard, Prometheus, Alertmanager, Velero, workload state, and fresh backup.
+- [x] Include pre-chaos backup creation step with expected `Completed` and `0` errors output.
+- [x] Include controlled failure step for deleting only the `order-service` namespace.
+- [x] Include expected dashboard response for Incident Stream, Cloud K8s outage state, AI Recovery Decision rank, operator approval, Restore Progress, and Edge K3s Recovered state.
+- [x] Include RTO target table and timestamp recording table.
+- [x] Include recovery verification commands for Edge K3s.
+- [x] Include troubleshooting for missing alerts, wrong recommendation rank, restore start failures, and restore hangs.
+- [x] Record non-destructive test results in `docs/task18-test-report.md`.
+- [x] Verify Alertmanager mock webhook ingestion through `POST /api/events/alert`.
+- [x] Verify `GET /api/events/latest` returns the mock `order-service` firing event.
+- [x] Verify `GET /api/events/history` returns the mock `order-service` firing event.
+- [x] Verify Edge K3s restore readiness returns `Ready` with score `100`.
+- [x] Confirm actual destructive chaos command was not executed during this validation.
+- [ ] Pre-chaos backup created and confirmed Completed before live scenario.
+- [ ] `kubectl delete namespace order-service` triggers Prometheus alert within 2 minutes.
+- [ ] Alertmanager webhook reaches DR Platform from the real cluster and appears in Incident Stream.
+- [ ] Dashboard Incident Stream visually shows the real alert.
+- [ ] AI recommendation panel shows `order-service` as rank 1 during the real incident.
+- [ ] Operator approval triggers real Velero restore to Edge K3s.
+- [ ] Restore completes with 0 errors.
+- [ ] Edge K3s topology node shows Recovered badge after the real restore.
+- [ ] Restored workload readiness is verified after Velero completion.
+- [ ] Actual RTO is recorded and within the 10-minute target.
+- [ ] TASK-14 Docker Compose, zrok, external dashboard/API, and agent reachability live verification are completed.
+
+TASK-18 verified values:
+- Demo script file: `docs/demo-scenario.md`.
+- Test report file: `docs/task18-test-report.md`.
+- Correct Alertmanager webhook endpoint: `POST /api/events/alert`.
+- Invalid guessed endpoint observed during testing: `POST /api/events/alertmanager`.
+- Temporary API verification port: `http://127.0.0.1:3998`.
+- Mock alert name: `NamespaceTerminating`.
+- Mock namespace: `order-service`.
+- Mock severity: `critical`.
+- Mock event source: `alertmanager`.
+- Mock event stored cluster ID normalized to `user-k8s`.
+- `GET /api/events/latest`: returned the mock firing event.
+- `GET /api/events/history`: returned the mock firing event.
+- `GET /api/clusters/edge-recovery/status`: Edge K3s reported `Ready`.
+- `GET /api/clusters/edge-recovery/restore-readiness`: returned `Ready`, score `100`, node ready, workload ready, and backup storage reachable.
+- Local `kubectl` binary found at `/usr/local/bin/kubectl`.
+- Local `velero` binary was not found on PATH.
+- Local kubectl context was not configured; `kubectl` fell back to `localhost:8080`.
+- Cloud K8s SSH check to `127.0.0.1:2222` failed with banner exchange timeout.
+- Edge K3s SSH check to `127.0.0.1:2223` reached SSH but direct login was denied without credentials.
+- Cloud-primary `status`, `backups`, and `recommendations` APIs failed with SSH-backed `COMMAND_ERROR`.
+- Frontend route `http://127.0.0.1:5173/dashboard` loaded but showed `Dashboard token required` because no temporary dashboard token was issued.
+- Temporary dashboard token issuance was not performed because it may update Git-ignored runtime registry data.
+- Actual namespace deletion, real backup creation, real restore approval, and real failover were not performed.
+- Recommended next feature work: RTO measurement visualization for alert detected, approval/restore start, restore complete, workload ready, per-stage durations, and total RTO.
