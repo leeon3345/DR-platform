@@ -5,6 +5,8 @@ dist
 .DS_Store
 .env
 .env.local
+.env.*
+!.env.api.example
 
 # Codex local context
 .codexignore

@@ -158,3 +158,46 @@ TASK-13 verified values:
 - Global link verification: `npm link`.
 - Linked command verification: `drctl --help`.
 - Temporary mock API verification covered `init`, `cluster list`, `cluster validate`, `policy set`, `recommend`, and success-case `--json`.
+
+## TASK-14: Docker Compose Packaging and zrok Exposure
+
+Status: Implementation Done, live zrok/agent verification pending
+
+- [x] Add `Dockerfile` for backend API server.
+- [x] Add `Dockerfile.dashboard` for nginx-served static dashboard build.
+- [x] Add `docker-compose.yml` to start API and dashboard services together.
+- [x] Mount `./server/registry` at runtime so registry files are not baked into the API image layer.
+- [x] Add `.env.api.example` with placeholder values only.
+- [x] Exclude `.env.api` and `.env.*` from Git while allowing `.env.api.example`.
+- [x] Add zrok share script for API and dashboard exposure.
+- [x] Support temporary public zrok shares.
+- [x] Support stable zrok shares through share names or reserved share tokens supplied by local environment variables.
+- [x] Add `DEPLOY.md` quickstart for Docker Compose, zrok, `drctl`, dashboard, and agent flow.
+- [x] Keep plaintext secrets out of `docker-compose.yml` and Git-tracked deployment files.
+- [x] Keep browser-side code free of shell execution.
+- [x] Support both `VITE_API_BASE_URL` and `VITE_API_URL` for dashboard builds.
+- [x] Add nginx `/api` proxy from dashboard container to `dr-api:3001`.
+- [x] Verify frontend build succeeds.
+- [x] Verify zrok script shell syntax succeeds.
+- [ ] Verify `docker compose up -d --build` with a real local `.env.api`.
+- [ ] Verify API is reachable at `http://localhost:3001`.
+- [ ] Verify dashboard is reachable at `http://localhost:5173`.
+- [ ] Verify zrok external API URL is reachable.
+- [ ] Verify dashboard served through zrok loads token-scoped cluster data.
+- [ ] Verify user-cluster agent can reach API through zrok.
+
+TASK-14 verified values:
+- Backend image file: `Dockerfile`.
+- Dashboard image file: `Dockerfile.dashboard`.
+- Compose file: `docker-compose.yml`.
+- Local env example: `.env.api.example`.
+- zrok helper: `scripts/zrok-share.sh`.
+- Deployment guide: `DEPLOY.md`.
+- API container bind: `0.0.0.0:3001`.
+- API local URL: `http://localhost:3001`.
+- Dashboard local URL: `http://localhost:5173`.
+- Dashboard internal API proxy: `/api` -> `http://dr-api:3001/api/`.
+- Build verification: `npm run build`.
+- Whitespace verification: `git diff --check`.
+- Script syntax verification: `bash -n scripts/zrok-share.sh`.
+- Compose config was not fully verified because `.env.api` is intentionally not present in the repository.

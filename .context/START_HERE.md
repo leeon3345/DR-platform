@@ -50,14 +50,16 @@ Main product direction:
 - TASK-11: `dr-agent` implemented as a Node.js Pod agent with registry-backed heartbeat ingestion, token-hash validation, allowlisted Velero restore command polling, Docker image packaging, Helm install chart, and dashboard cluster-list agent state reflection.
 - TASK-12: Token-based user cluster isolation added with dashboard token issuance, Git-ignored token registry, scoped cluster APIs, agent registration ownership mapping, and dashboard URL/sessionStorage token handling.
 - TASK-13: `drctl` CLI package added with core API-backed operator commands for registration, cluster listing/validation, policy updates, recommendations, JSON output, local config, safe errors, and local npm linking.
+- TASK-14: Docker Compose packaging added for the backend API and nginx-served dashboard, with `.env.api.example`, zrok share helper script, deployment quickstart, dashboard `/api` proxying, and Git-ignored local env handling.
 
 ## Current Next Task
 
 ```text
-TASK-14 should be drafted.
+TASK-15 should be drafted.
 ```
 
 Likely next focus:
+- Live-verify TASK-14 with a real `.env.api`, `docker compose up -d --build`, zrok shares, external API/dashboard URLs, and an agent reaching the API through zrok.
 - Add platform-side pending restore command creation tied to approved recommendations and token-owned target clusters.
 - Add restore progress tracking and dashboard status for agent-executed restores.
 - Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets if they should live beside the agent chart.
@@ -98,6 +100,17 @@ agent/dr-agent.mjs
 agent/Dockerfile
 helm/dr-agent
 cli/bin/drctl.mjs
+```
+
+Packaging/deployment:
+
+```text
+Dockerfile
+Dockerfile.dashboard
+docker-compose.yml
+.env.api.example
+scripts/zrok-share.sh
+DEPLOY.md
 ```
 
 Project/task docs:
@@ -157,6 +170,14 @@ Frontend:
 
 ```bash
 npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Docker Compose:
+
+```bash
+cp .env.api.example .env.api
+docker compose up -d --build
+bash scripts/zrok-share.sh
 ```
 
 Build:

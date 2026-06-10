@@ -44,7 +44,7 @@ export function getDashboardToken() {
 }
 
 function getApiBaseUrls() {
-  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+  const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL)?.trim();
   const candidates = [
     configuredBaseUrl,
     "",
