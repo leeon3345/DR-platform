@@ -17,6 +17,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import {
   approveRecoveryRecommendation,
+  executeRecoveryRestore,
   initializeDashboardToken,
   loadDashboardData,
   loadEventHistory,
@@ -97,7 +98,7 @@ const statusStyles = {
     glow: "shadow-sky-500/10",
   },
   restoring: {
-    label: "Restoring",
+    label: "Restore",
     text: "Failover",
     badge: "bg-violet-50 text-violet-700 ring-violet-200",
     dot: "bg-violet-500 shadow-violet-500/40",
@@ -814,7 +815,20 @@ function getAlertTopologyState(events, now = Date.now()) {
   };
 }
 
-function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId) {
+function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId, restoreWorkloadId) {
+  if (restoreWorkloadId && nodeId === "edge-k3s") {
+    return {
+      ...data,
+      status: "restoring",
+      detail: `${restoreWorkloadId} restore requested on Edge K3s`,
+      metrics: [
+        ["Cluster", "edge-recovery"],
+        ["Restore", "Triggered"],
+        ["Workload", restoreWorkloadId],
+      ],
+    };
+  }
+
   if (alertState.nodes[nodeId]) {
     return {
       ...data,
@@ -864,7 +878,11 @@ function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId) {
   return data;
 }
 
-function getEdgeFlowState(alertState, activeCluster) {
+function getEdgeFlowState(alertState, activeCluster, restoreWorkloadId) {
+  if (restoreWorkloadId) {
+    return "restore";
+  }
+
   if (alertState.hasFiring) {
     return "alert";
   }
@@ -1795,18 +1813,54 @@ function RegistrationGuidance() {
   );
 }
 
-function RecoveryRecommendationPanel({ recommendations, loading, error, approvalError, pendingWorkloadId, onApprove }) {
+function getRecommendationWorkloadId(recommendation) {
+  return firstValue(recommendation, ["workloadId", "namespace", "name", "metadata.name"], "unknown-workload");
+}
+
+function getRecommendationRank(recommendation, index) {
+  return firstValue(recommendation, ["rank", "priority"], index + 1);
+}
+
+function RecoveryRecommendationPanel({
+  recommendations,
+  loading,
+  error,
+  approvalError,
+  pendingWorkloadId,
+  approvedWorkloads,
+  restoreWorkloadId,
+  hasActiveAlert,
+  onApprove,
+  onRefresh,
+}) {
+  const hasRecoveryActivity = Boolean(restoreWorkloadId) || Object.keys(approvedWorkloads).length > 0;
+  const shouldShowEmptyState = !loading && !error && !hasActiveAlert && !hasRecoveryActivity;
+  const visibleRecommendations = shouldShowEmptyState ? [] : recommendations;
+  const selectedRecommendation =
+    visibleRecommendations.find((recommendation) => approvedWorkloads[getRecommendationWorkloadId(recommendation)]) ??
+    visibleRecommendations[0];
+  const selectedNamespace = selectedRecommendation ? getRecommendationWorkloadId(selectedRecommendation) : null;
+  const selectedExplanation = selectedRecommendation
+    ? firstValue(selectedRecommendation, ["explanation", "reason", "summary"], "AI 설명을 불러오지 못했습니다.")
+    : null;
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-sm font-black text-slate-950">Recovery Priority Recommendations</h2>
-          <p className="text-xs font-medium text-slate-500">정책, 백업 신선도, 워크로드 health 기반 승인 대기 목록</p>
+          <h2 className="flex items-center gap-2 text-sm font-black text-slate-950">
+            <Icon name="spark" className="h-4 w-4 text-sky-600" />
+            AI Recovery Decision
+          </h2>
+          <p className="text-xs font-medium text-slate-500">복구 우선순위 추천 · cloud-primary</p>
         </div>
-        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700 ring-1 ring-sky-200">
-          <Icon name="brain" className="h-4 w-4" />
-          AI explained
-        </span>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="inline-flex w-fit items-center justify-center rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm transition hover:bg-slate-50"
+        >
+          새로고침
+        </button>
       </div>
 
       {loading && (
@@ -1823,90 +1877,97 @@ function RecoveryRecommendationPanel({ recommendations, loading, error, approval
 
       {!loading && approvalError && (
         <div className="mt-5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
-          승인 상태를 저장하지 못했습니다. 잠시 후 다시 시도하세요.
+          복구 승인을 완료하지 못했습니다. 잠시 후 다시 시도하세요.
         </div>
       )}
 
-      {!loading && !error && recommendations.length === 0 && (
+      {shouldShowEmptyState && (
+        <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+          장애 이벤트 없음. 모니터링 중...
+        </div>
+      )}
+
+      {!loading && !error && !shouldShowEmptyState && visibleRecommendations.length === 0 && (
         <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
           추천할 워크로드가 아직 없습니다. 정책 또는 워크로드 metric이 수집되면 목록이 표시됩니다.
         </div>
       )}
 
-      {!loading && !error && recommendations.length > 0 && (
-        <div className="mt-5 grid gap-3">
-          {recommendations.map((recommendation) => {
-            const pending = pendingWorkloadId === recommendation.workloadId;
+      {!loading && !error && !shouldShowEmptyState && visibleRecommendations.length > 0 && (
+        <>
+          <div className="mt-5 overflow-hidden rounded-lg border border-slate-200">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                <thead className="bg-slate-50 text-xs font-black text-slate-500">
+                  <tr>
+                    <th className="w-16 px-4 py-3">순위</th>
+                    <th className="min-w-[180px] px-4 py-3">네임스페이스</th>
+                    <th className="w-24 px-4 py-3">점수</th>
+                    <th className="w-28 px-4 py-3">티어</th>
+                    <th className="min-w-[220px] px-4 py-3">AI 설명</th>
+                    <th className="w-32 px-4 py-3">상태</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {visibleRecommendations.map((recommendation, index) => {
+                    const workloadId = getRecommendationWorkloadId(recommendation);
+                    const approved = Boolean(approvedWorkloads[workloadId] || firstValue(recommendation, ["approved"], false));
+                    const pending = pendingWorkloadId === workloadId;
+                    const tier = firstValue(recommendation, ["tier", "policyTier"], "unknown");
+                    const score = firstValue(recommendation, ["score", "priorityScore"], 0);
+                    const explanation = firstValue(recommendation, ["explanation", "reason", "summary"], "추천 설명 없음");
 
-            return (
-              <article
-                key={recommendation.workloadId}
-                className="rounded-lg border border-slate-200 bg-slate-50 p-4"
-              >
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="grid h-8 w-8 place-items-center rounded-md bg-slate-950 text-sm font-black text-white">
-                        {recommendation.rank}
-                      </span>
-                      <h3 className="text-base font-black text-slate-950">{recommendation.namespace}</h3>
-                      <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold uppercase text-slate-600 ring-1 ring-slate-200">
-                        {recommendation.tier}
-                      </span>
-                      {recommendation.approved && (
-                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200">
-                          Approved
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-3 max-w-4xl text-sm font-medium leading-6 text-slate-700">
-                      {recommendation.explanation}
-                    </p>
-                  </div>
+                    return (
+                      <tr key={workloadId} className={approved ? "bg-emerald-50/50" : "bg-white"}>
+                        <td className="px-4 py-4 text-center font-black text-slate-900">
+                          {getRecommendationRank(recommendation, index)}
+                        </td>
+                        <td className="px-4 py-4 font-black text-slate-950">{workloadId}</td>
+                        <td className="px-4 py-4 font-black text-slate-900">{score}</td>
+                        <td className="px-4 py-4">
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-black uppercase text-slate-700 ring-1 ring-slate-200">
+                            {tier}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4 text-xs font-semibold leading-5 text-slate-600">
+                          {explanation}
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col gap-2">
+                            {approved && (
+                              <span className="inline-flex w-fit items-center rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black text-emerald-800 ring-1 ring-emerald-200">
+                                승인됨
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              disabled={approved || pending}
+                              onClick={() => onApprove(workloadId)}
+                              className={`rounded-md px-3 py-2 text-sm font-black transition ${
+                                approved
+                                  ? "cursor-not-allowed bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                                  : "bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-wait disabled:bg-slate-400"
+                              }`}
+                            >
+                              {approved ? "완료" : pending ? "실행 중" : "승인"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-                  <div className="grid shrink-0 grid-cols-[92px_110px] gap-2 md:grid-cols-1">
-                    <div className="rounded-md bg-white px-3 py-2 text-center ring-1 ring-slate-200">
-                      <div className="text-[11px] font-bold text-slate-400">Score</div>
-                      <div className="text-2xl font-black text-slate-950">{recommendation.score}</div>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={recommendation.approved || pending}
-                      onClick={() => onApprove(recommendation.workloadId)}
-                      className={`rounded-md px-3 py-2 text-sm font-black transition ${
-                        recommendation.approved
-                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
-                          : "bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-wait disabled:bg-slate-400"
-                      }`}
-                    >
-                      {recommendation.approved ? "Confirmed" : pending ? "Saving" : "Approve"}
-                    </button>
-                  </div>
-                </div>
-
-                <dl className="mt-4 grid gap-2 text-xs sm:grid-cols-3">
-                  <div className="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200">
-                    <dt className="font-bold text-slate-400">Tier weight</dt>
-                    <dd className="mt-1 font-black text-slate-900">{recommendation.scoreBreakdown?.tierWeight ?? "N/A"}</dd>
-                  </div>
-                  <div className="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200">
-                    <dt className="font-bold text-slate-400">Backup freshness</dt>
-                    <dd className="mt-1 font-black text-slate-900">
-                      {recommendation.scoreBreakdown?.backupFreshness ?? "N/A"}
-                      <span className="ml-2 font-semibold text-slate-500">
-                        {formatMetricAge(recommendation.backupAgeMinutes)}
-                      </span>
-                    </dd>
-                  </div>
-                  <div className="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200">
-                    <dt className="font-bold text-slate-400">Workload health</dt>
-                    <dd className="mt-1 font-black text-slate-900">{recommendation.scoreBreakdown?.workloadHealth ?? "N/A"}</dd>
-                  </div>
-                </dl>
-              </article>
-            );
-          })}
-        </div>
+          {selectedExplanation && (
+            <div className="mt-5 rounded-lg border border-sky-100 bg-sky-50 px-4 py-3">
+              <h3 className="text-sm font-black text-sky-950">AI 설명 ({selectedNamespace}):</h3>
+              <p className="mt-2 text-sm font-semibold leading-6 text-sky-900/80">{selectedExplanation}</p>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -1988,6 +2049,8 @@ function Dashboard() {
   const [apiLoading, setApiLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [pendingWorkloadId, setPendingWorkloadId] = useState(null);
+  const [approvedWorkloads, setApprovedWorkloads] = useState({});
+  const [restoreWorkloadId, setRestoreWorkloadId] = useState(null);
   const [approvalError, setApprovalError] = useState(null);
   const [alertEvents, setAlertEvents] = useState([]);
   const [eventClock, setEventClock] = useState(Date.now());
@@ -2015,14 +2078,15 @@ function Dashboard() {
             },
             alertTopologyState,
             pendingWorkloadId,
+            restoreWorkloadId,
           ),
         },
       })),
-    [activeCluster, alertTopologyState, pendingWorkloadId],
+    [activeCluster, alertTopologyState, pendingWorkloadId, restoreWorkloadId],
   );
   const activeEdges = useMemo(
-    () => buildAlertAwareEdges(flowEdges, getEdgeFlowState(alertTopologyState, activeCluster)),
-    [activeCluster, alertTopologyState],
+    () => buildAlertAwareEdges(flowEdges, getEdgeFlowState(alertTopologyState, activeCluster, restoreWorkloadId)),
+    [activeCluster, alertTopologyState, restoreWorkloadId],
   );
   const apiErrors = endpointErrors(apiResults);
   const validateErrors = validationErrors(apiResults);
@@ -2102,11 +2166,27 @@ function Dashboard() {
   }, [dashboardToken]);
 
   async function handleApproveRecommendation(workloadId) {
+    if (approvedWorkloads[workloadId]) {
+      return;
+    }
+
+    const confirmed = window.confirm("이 작업은 Edge K3s에 복구를 실행합니다. 계속하시겠습니까?");
+
+    if (!confirmed) {
+      return;
+    }
+
     setPendingWorkloadId(workloadId);
     setApprovalError(null);
 
     try {
       await approveRecoveryRecommendation(workloadId);
+      await executeRecoveryRestore(workloadId);
+      setApprovedWorkloads((workloads) => ({
+        ...workloads,
+        [workloadId]: true,
+      }));
+      setRestoreWorkloadId(workloadId);
       setReloadNonce((value) => value + 1);
     } catch (error) {
       setApprovalError(error.message);
@@ -2264,7 +2344,11 @@ function Dashboard() {
           error={recommendationError}
           approvalError={approvalError}
           pendingWorkloadId={pendingWorkloadId}
+          approvedWorkloads={approvedWorkloads}
+          restoreWorkloadId={restoreWorkloadId}
+          hasActiveAlert={alertTopologyState.hasFiring}
           onApprove={handleApproveRecommendation}
+          onRefresh={() => setReloadNonce((value) => value + 1)}
         />
       </div>
     </main>

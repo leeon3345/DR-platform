@@ -52,17 +52,21 @@ Main product direction:
 - TASK-13: `drctl` CLI package added with core API-backed operator commands for registration, cluster listing/validation, policy updates, recommendations, JSON output, local config, safe errors, and local npm linking.
 - TASK-14: Docker Compose packaging added for the backend API and nginx-served dashboard, with `.env.api.example`, zrok share helper script, deployment quickstart, dashboard `/api` proxying, and Git-ignored local env handling.
 - TASK-15: Landing page (`/`) with hero, architecture flow, and feature cards added. Agent installation guide page (`/download`) with step-by-step onboarding flow added. React Router routes connect `/`, `/download`, and `/dashboard`. Platform URL reads from `VITE_PLATFORM_URL`. No API calls on public pages.
+- TASK-16: Recovery Decision panel added below topology with ranked AI recommendations, explicit operator confirmation, recommendation approval, TASK-05 restore execution, same-session duplicate prevention, approved badges, manual refresh, empty/error states, and Edge K3s Restore topology state after restore trigger.
 
 ## Current Next Task
 
 ```text
-TASK-16 should be drafted.
+TASK-17 should be drafted.
 ```
 
 Likely next focus:
+- Add restore progress tracking and dashboard status for agent-executed restores.
+- Poll restore status after TASK-16 approval-triggered restore execution.
+- Add TASK-17 recovery progress panel that shows restore phase, workload readiness, and final Edge K3s readiness.
+- Consider extending restore status to agent-owned clusters if platform-side pending command creation is introduced.
 - Live-verify TASK-14 with a real `.env.api`, `docker compose up -d --build`, zrok shares, external API/dashboard URLs, and an agent reaching the API through zrok.
 - Add platform-side pending restore command creation tied to approved recommendations and token-owned target clusters.
-- Add restore progress tracking and dashboard status for agent-executed restores.
 - Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets if they should live beside the agent chart.
 - Add dashboard and CLI operator flow to generate/copy a one-command `dr-agent` Helm install command that includes the issued dashboard token.
 - Keep user-cluster credentials and tokens out of Git-tracked files.

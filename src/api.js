@@ -172,3 +172,14 @@ export async function loadLatestEvent({ signal } = {}) {
 export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {
   return postJson(`/api/clusters/cloud-primary/recommendations/${encodeURIComponent(workloadId)}/approve`, { signal });
 }
+
+export async function executeRecoveryRestore(workloadId, { signal } = {}) {
+  return postJson("/api/clusters/cloud-primary/restores", {
+    body: {
+      backupName: "latest",
+      targetNamespace: workloadId,
+      confirm: true,
+    },
+    signal,
+  });
+}

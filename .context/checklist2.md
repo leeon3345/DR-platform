@@ -233,3 +233,29 @@ TASK-15 verified values:
 - Platform URL source: `import.meta.env.VITE_PLATFORM_URL` with fallback `https://your-platform.zrok.io`.
 - Build verification: `npm run build`.
 
+## TASK-16: Recovery Flow UI and Operator Approval
+
+Status: Done
+
+- [x] Recovery Decision panel renders ranked recommendations from API.
+- [x] Each row shows rank, namespace, score, tier, and AI explanation.
+- [x] Approve button triggers confirmation dialog before API call.
+- [x] Confirmed approval calls recommendation approve and restore execute APIs.
+- [x] Approved workload shows confirmed badge and disabled button.
+- [x] Topology Edge K3s node shows Restore badge after approval.
+- [x] Empty state renders when no active alert exists.
+- [x] No secrets or Velero command details exposed in UI.
+- [x] Frontend build succeeds.
+
+TASK-16 verified values:
+- Updated frontend files: `src/App.jsx`, `src/api.js`.
+- Recovery panel title: `AI Recovery Decision`.
+- Recommendation source: `GET /api/clusters/cloud-primary/recommendations` through existing dashboard data loading.
+- Approval endpoint: `POST /api/clusters/cloud-primary/recommendations/:workloadId/approve`.
+- Restore execution endpoint: `POST /api/clusters/cloud-primary/restores`.
+- Restore execution body: `{ backupName: "latest", targetNamespace: workloadId, confirm: true }`.
+- Confirmation message: `이 작업은 Edge K3s에 복구를 실행합니다. 계속하시겠습니까?`.
+- Duplicate prevention scope: same dashboard session via approved workload state.
+- Topology restore marker: Edge K3s node status label `Restore` after restore trigger.
+- Manual refresh: Recovery Decision panel `새로고침` button.
+- Build verification: `npm run build`.
