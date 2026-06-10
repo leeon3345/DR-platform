@@ -22,6 +22,7 @@ import {
   loadDashboardData,
   loadEventHistory,
   loadLatestEvent,
+  loadRestoreStatus,
 } from "./api";
 
 const statusStyles = {
@@ -815,7 +816,20 @@ function getAlertTopologyState(events, now = Date.now()) {
   };
 }
 
-function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId, restoreWorkloadId) {
+function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId, restoreWorkloadId, restoreRecovered) {
+  if (restoreRecovered && nodeId === "edge-k3s") {
+    return {
+      ...data,
+      status: "recovered",
+      detail: `${restoreWorkloadId || "Workload"} restore completed on Edge K3s`,
+      metrics: [
+        ["Restore", "Completed"],
+        ["Workload", restoreWorkloadId || "Ready"],
+        ["Traffic", "Ready"],
+      ],
+    };
+  }
+
   if (restoreWorkloadId && nodeId === "edge-k3s") {
     return {
       ...data,
@@ -878,8 +892,8 @@ function applyAlertTopologyToNode(nodeId, data, alertState, pendingWorkloadId, r
   return data;
 }
 
-function getEdgeFlowState(alertState, activeCluster, restoreWorkloadId) {
-  if (restoreWorkloadId) {
+function getEdgeFlowState(alertState, activeCluster, restoreWorkloadId, restoreRecovered) {
+  if (restoreWorkloadId && !restoreRecovered) {
     return "restore";
   }
 
@@ -1821,6 +1835,223 @@ function getRecommendationRank(recommendation, index) {
   return firstValue(recommendation, ["rank", "priority"], index + 1);
 }
 
+const terminalRestoreStatuses = new Set(["Completed", "Failed"]);
+const restoreProgressByStatus = {
+  PendingAgent: 15,
+  Submitted: 35,
+  New: 40,
+  Running: 60,
+  InProgress: 60,
+  PartiallyFailed: 85,
+  Completed: 100,
+  Failed: 100,
+};
+
+function getRestorePhase(operation) {
+  if (!operation) {
+    return null;
+  }
+
+  return firstValue(operation.statusPayload, ["restore.status", "restore.phase", "status", "phase"], operation.phase || "PendingAgent");
+}
+
+function isTerminalRestorePhase(phase) {
+  return terminalRestoreStatuses.has(phase);
+}
+
+function getRestoreProgressPercent(phase) {
+  return restoreProgressByStatus[phase] ?? (isTerminalRestorePhase(phase) ? 100 : 50);
+}
+
+function getRestoreTime(operation, paths, fallback) {
+  return firstValue(operation?.statusPayload, paths, fallback);
+}
+
+function formatDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    return "00:00";
+  }
+
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = hours > 0 ? [hours, minutes, seconds] : [minutes, seconds];
+
+  return parts.map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function parseDurationToMilliseconds(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const match = text.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+
+  if (!match || !text) {
+    return null;
+  }
+
+  const hours = Number.parseInt(match[1] || "0", 10);
+  const minutes = Number.parseInt(match[2] || "0", 10);
+  const seconds = Number.parseInt(match[3] || "0", 10);
+
+  return ((hours * 60 * 60) + (minutes * 60) + seconds) * 1000;
+}
+
+function getIncidentStartedAt(alertEvents) {
+  const firingEvents = alertEvents
+    .filter((event) => event.status !== "resolved")
+    .map((event) => firstValue(event, ["startsAt", "receivedAt"], null))
+    .filter(Boolean)
+    .sort();
+
+  return firingEvents[0] || null;
+}
+
+function getRestoreEstimateLabel(phase, percent) {
+  if (phase === "Completed") {
+    return "완료";
+  }
+
+  if (phase === "Failed") {
+    return "확인 필요";
+  }
+
+  if (percent >= 80) {
+    return "완료 확인 중";
+  }
+
+  if (percent >= 50) {
+    return "워크로드 복원 중";
+  }
+
+  return "Velero 작업 제출 중";
+}
+
+function RestoreProgressPanel({ operation, clock, incidentStartedAt, rtoTarget, onRetry }) {
+  if (!operation) {
+    return null;
+  }
+
+  const phase = getRestorePhase(operation);
+  const percent = getRestoreProgressPercent(phase);
+  const startedAt = getRestoreTime(operation, ["restore.startTimestamp", "restore.createdTimestamp", "acceptedTimestamp"], operation.startedAt);
+  const completedAt = getRestoreTime(operation, ["restore.completionTimestamp"], operation.completedAt);
+  const elapsedEnd = completedAt ? new Date(completedAt).getTime() : clock;
+  const elapsedStart = new Date(startedAt || operation.startedAt).getTime();
+  const elapsed = Number.isFinite(elapsedStart) ? elapsedEnd - elapsedStart : 0;
+  const rtoStart = new Date(incidentStartedAt || operation.startedAt).getTime();
+  const rtoEnd = completedAt ? new Date(completedAt).getTime() : null;
+  const actualRto = rtoEnd && Number.isFinite(rtoStart) ? rtoEnd - rtoStart : null;
+  const targetRto = parseDurationToMilliseconds(rtoTarget);
+  const rtoMet = actualRto !== null && targetRto !== null ? actualRto <= targetRto : null;
+  const failed = phase === "Failed";
+  const completed = phase === "Completed";
+  const message = firstValue(operation.statusPayload, ["message"], operation.error || "");
+
+  return (
+    <section className={`rounded-lg border bg-white p-5 shadow-sm ${failed ? "border-red-200" : completed ? "border-emerald-200" : "border-violet-200"}`}>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-black text-slate-950">
+            <Icon name="pulse" className={`h-4 w-4 ${failed ? "text-red-600" : completed ? "text-emerald-600" : "text-violet-600"}`} />
+            Restore Progress
+          </h2>
+          <p className="text-xs font-medium text-slate-500">
+            {operation.workloadId} → Edge K3s ({operation.targetClusterId})
+          </p>
+        </div>
+        <span className={`inline-flex w-fit items-center rounded-full px-3 py-1 text-xs font-black ring-1 ${
+          failed
+            ? "bg-red-50 text-red-700 ring-red-200"
+            : completed
+              ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+              : "bg-violet-50 text-violet-700 ring-violet-200"
+        }`}
+        >
+          {phase}
+        </span>
+      </div>
+
+      <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+        <div>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
+            <span>Velero Restore</span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-700 ring-1 ring-slate-200">
+              {operation.restoreName}
+            </span>
+          </div>
+          <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-100 ring-1 ring-slate-200">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                failed ? "bg-red-500" : completed ? "bg-emerald-500" : "bg-violet-500"
+              }`}
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs font-black text-slate-500">
+            <span>단계: {phase}</span>
+            <span>{percent}%</span>
+          </div>
+          {message && (
+            <div className={`mt-4 rounded-md border px-3 py-2 text-sm font-semibold ${
+              failed ? "border-red-200 bg-red-50 text-red-800" : "border-slate-200 bg-slate-50 text-slate-700"
+            }`}
+            >
+              {message}
+            </div>
+          )}
+        </div>
+
+        <div className="grid gap-2 text-sm">
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <span className="block text-xs font-black uppercase text-slate-400">경과 시간</span>
+            <strong className="text-slate-950">{formatDuration(elapsed)}</strong>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <span className="block text-xs font-black uppercase text-slate-400">시작</span>
+            <strong className="text-slate-950">{formatTime(startedAt)}</strong>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <span className="block text-xs font-black uppercase text-slate-400">예상</span>
+            <strong className="text-slate-950">{getRestoreEstimateLabel(phase, percent)}</strong>
+          </div>
+          <div className={`rounded-md border px-3 py-2 ${
+            rtoMet === true
+              ? "border-emerald-200 bg-emerald-50"
+              : rtoMet === false
+                ? "border-amber-200 bg-amber-50"
+                : "border-slate-200 bg-slate-50"
+          }`}
+          >
+            <span className="block text-xs font-black uppercase text-slate-400">RTO</span>
+            <strong className="text-slate-950">
+              {actualRto === null ? `진행 중 · 목표 ${rtoTarget}` : `${formatDuration(actualRto)} / 목표 ${rtoTarget}`}
+            </strong>
+          </div>
+        </div>
+      </div>
+
+      {failed && (
+        <div className="mt-4 flex flex-col gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800 sm:flex-row sm:items-center sm:justify-between">
+          <span>복구 상태가 Failed입니다. 동일 워크로드는 승인 플로우에서 다시 시도할 수 있습니다.</span>
+          <button
+            type="button"
+            onClick={() => onRetry(operation.workloadId)}
+            className="inline-flex w-fit items-center justify-center rounded-md bg-red-700 px-3 py-2 text-xs font-black text-white transition hover:bg-red-800"
+          >
+            재시도
+          </button>
+        </div>
+      )}
+
+      {completed && (
+        <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+          복구 완료. Edge K3s 노드가 Recovered 상태로 전환되었습니다.
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RecoveryRecommendationPanel({
   recommendations,
   loading,
@@ -1828,6 +2059,7 @@ function RecoveryRecommendationPanel({
   approvalError,
   pendingWorkloadId,
   approvedWorkloads,
+  failedRestoreWorkloadId,
   restoreWorkloadId,
   hasActiveAlert,
   onApprove,
@@ -1911,7 +2143,8 @@ function RecoveryRecommendationPanel({
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {visibleRecommendations.map((recommendation, index) => {
                     const workloadId = getRecommendationWorkloadId(recommendation);
-                    const approved = Boolean(approvedWorkloads[workloadId] || firstValue(recommendation, ["approved"], false));
+                    const failed = failedRestoreWorkloadId === workloadId;
+                    const approved = Boolean(approvedWorkloads[workloadId] || firstValue(recommendation, ["approved"], false)) && !failed;
                     const pending = pendingWorkloadId === workloadId;
                     const tier = firstValue(recommendation, ["tier", "policyTier"], "unknown");
                     const score = firstValue(recommendation, ["score", "priorityScore"], 0);
@@ -1939,6 +2172,11 @@ function RecoveryRecommendationPanel({
                                 승인됨
                               </span>
                             )}
+                            {failed && (
+                              <span className="inline-flex w-fit items-center rounded-full bg-red-100 px-2.5 py-1 text-[11px] font-black text-red-800 ring-1 ring-red-200">
+                                실패
+                              </span>
+                            )}
                             <button
                               type="button"
                               disabled={approved || pending}
@@ -1949,7 +2187,7 @@ function RecoveryRecommendationPanel({
                                   : "bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-wait disabled:bg-slate-400"
                               }`}
                             >
-                              {approved ? "완료" : pending ? "실행 중" : "승인"}
+                              {approved ? "완료" : pending ? "실행 중" : failed ? "재시도" : "승인"}
                             </button>
                           </div>
                         </td>
@@ -2051,6 +2289,9 @@ function Dashboard() {
   const [pendingWorkloadId, setPendingWorkloadId] = useState(null);
   const [approvedWorkloads, setApprovedWorkloads] = useState({});
   const [restoreWorkloadId, setRestoreWorkloadId] = useState(null);
+  const [recoveredWorkloadId, setRecoveredWorkloadId] = useState(null);
+  const [restoreOperation, setRestoreOperation] = useState(null);
+  const [restoreClock, setRestoreClock] = useState(Date.now());
   const [approvalError, setApprovalError] = useState(null);
   const [alertEvents, setAlertEvents] = useState([]);
   const [eventClock, setEventClock] = useState(Date.now());
@@ -2061,6 +2302,10 @@ function Dashboard() {
   const dashboardClusters = useMemo(() => buildDashboardClusters(apiResults, apiLoading, alertEvents), [apiResults, apiLoading, alertEvents]);
   const metricGroups = useMemo(() => buildMetricGroups(apiResults, apiLoading), [apiResults, apiLoading]);
   const recommendations = useMemo(() => getRecoveryRecommendations(apiResults), [apiResults]);
+  const restorePhase = getRestorePhase(restoreOperation);
+  const restoreRecovered = Boolean(recoveredWorkloadId && (!restoreOperation || restorePhase === "Completed"));
+  const failedRestoreWorkloadId = restorePhase === "Failed" ? restoreOperation?.workloadId : null;
+  const incidentStartedAt = useMemo(() => getIncidentStartedAt(alertEvents), [alertEvents]);
   const activeCluster = useMemo(
     () => dashboardClusters.find((cluster) => cluster.id === activeClusterId) ?? dashboardClusters[0] ?? clusterScenarios[0],
     [activeClusterId, dashboardClusters],
@@ -2079,14 +2324,15 @@ function Dashboard() {
             alertTopologyState,
             pendingWorkloadId,
             restoreWorkloadId,
+            restoreRecovered,
           ),
         },
       })),
-    [activeCluster, alertTopologyState, pendingWorkloadId, restoreWorkloadId],
+    [activeCluster, alertTopologyState, pendingWorkloadId, restoreWorkloadId, restoreRecovered],
   );
   const activeEdges = useMemo(
-    () => buildAlertAwareEdges(flowEdges, getEdgeFlowState(alertTopologyState, activeCluster, restoreWorkloadId)),
-    [activeCluster, alertTopologyState, restoreWorkloadId],
+    () => buildAlertAwareEdges(flowEdges, getEdgeFlowState(alertTopologyState, activeCluster, restoreWorkloadId, restoreRecovered)),
+    [activeCluster, alertTopologyState, restoreWorkloadId, restoreRecovered],
   );
   const apiErrors = endpointErrors(apiResults);
   const validateErrors = validationErrors(apiResults);
@@ -2165,8 +2411,98 @@ function Dashboard() {
     };
   }, [dashboardToken]);
 
+  useEffect(() => {
+    if (!restoreOperation) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => setRestoreClock(Date.now()), 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [restoreOperation]);
+
+  useEffect(() => {
+    if (!dashboardToken || !restoreOperation?.restoreName || isTerminalRestorePhase(getRestorePhase(restoreOperation))) {
+      return undefined;
+    }
+
+    let active = true;
+    let controller = null;
+
+    async function pollRestoreStatus() {
+      const requestController = new AbortController();
+      controller = requestController;
+
+      try {
+        const payload = await loadRestoreStatus(restoreOperation.targetClusterId, restoreOperation.restoreName, {
+          signal: requestController.signal,
+        });
+        const phase = firstValue(payload, ["restore.status", "restore.phase", "status", "phase"], restoreOperation.phase || "PendingAgent");
+        const completedAt = firstValue(payload, ["restore.completionTimestamp"], null);
+
+        if (active) {
+          setRestoreOperation((current) => {
+            if (!current || current.restoreName !== restoreOperation.restoreName) {
+              return current;
+            }
+
+            return {
+              ...current,
+              phase,
+              statusPayload: payload,
+              completedAt: isTerminalRestorePhase(phase) ? completedAt || new Date().toISOString() : null,
+              error: null,
+            };
+          });
+
+          if (phase === "Completed") {
+            setRecoveredWorkloadId(restoreOperation.workloadId);
+          }
+        }
+      } catch (error) {
+        if (active && !requestController.signal.aborted) {
+          setRestoreOperation((current) => {
+            if (!current || current.restoreName !== restoreOperation.restoreName) {
+              return current;
+            }
+
+            return {
+              ...current,
+              error: error.message,
+            };
+          });
+        }
+      }
+    }
+
+    pollRestoreStatus();
+    const intervalId = window.setInterval(pollRestoreStatus, 10000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      controller?.abort();
+    };
+  }, [dashboardToken, restoreOperation?.restoreName, restoreOperation?.targetClusterId, restoreOperation?.phase]);
+
+  useEffect(() => {
+    if (restorePhase !== "Completed" || !restoreOperation?.restoreName) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setRestoreOperation((current) => (
+        current?.restoreName === restoreOperation.restoreName ? null : current
+      ));
+    }, 60000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [restorePhase, restoreOperation?.restoreName]);
+
   async function handleApproveRecommendation(workloadId) {
-    if (approvedWorkloads[workloadId]) {
+    const retryingFailedRestore = restoreOperation?.workloadId === workloadId && getRestorePhase(restoreOperation) === "Failed";
+
+    if (approvedWorkloads[workloadId] && !retryingFailedRestore) {
       return;
     }
 
@@ -2178,15 +2514,34 @@ function Dashboard() {
 
     setPendingWorkloadId(workloadId);
     setApprovalError(null);
+    setRecoveredWorkloadId(null);
 
     try {
       await approveRecoveryRecommendation(workloadId);
-      await executeRecoveryRestore(workloadId);
+      const restoreResponse = await executeRecoveryRestore(workloadId);
+      const restore = firstValue(restoreResponse, ["restore"], {});
+      const restoreName = firstValue(restoreResponse, ["restore.restoreName", "requestedRestoreName"], `${workloadId}-restore`);
+      const targetClusterId = firstValue(restoreResponse, ["targetClusterId", "requestedTargetClusterId"], "edge-recovery");
+      const acceptedAt = firstValue(restoreResponse, ["acceptedTimestamp", "restore.createdTimestamp"], new Date().toISOString());
+      const phase = firstValue(restoreResponse, ["restore.status", "restore.phase"], "PendingAgent");
+
       setApprovedWorkloads((workloads) => ({
         ...workloads,
         [workloadId]: true,
       }));
       setRestoreWorkloadId(workloadId);
+      setRestoreOperation({
+        workloadId,
+        restoreName,
+        targetClusterId,
+        acceptedAt,
+        startedAt: firstValue(restore, ["startTimestamp", "createdTimestamp"], acceptedAt),
+        completedAt: null,
+        phase,
+        statusPayload: restoreResponse,
+        error: null,
+      });
+      setRestoreClock(Date.now());
       setReloadNonce((value) => value + 1);
     } catch (error) {
       setApprovalError(error.message);
@@ -2338,6 +2693,14 @@ function Dashboard() {
           ))}
         </section>
 
+        <RestoreProgressPanel
+          operation={restoreOperation}
+          clock={restoreClock}
+          incidentStartedAt={incidentStartedAt}
+          rtoTarget={activeCluster.rto}
+          onRetry={handleApproveRecommendation}
+        />
+
         <RecoveryRecommendationPanel
           recommendations={recommendations}
           loading={apiLoading}
@@ -2345,6 +2708,7 @@ function Dashboard() {
           approvalError={approvalError}
           pendingWorkloadId={pendingWorkloadId}
           approvedWorkloads={approvedWorkloads}
+          failedRestoreWorkloadId={failedRestoreWorkloadId}
           restoreWorkloadId={restoreWorkloadId}
           hasActiveAlert={alertTopologyState.hasFiring}
           onApprove={handleApproveRecommendation}

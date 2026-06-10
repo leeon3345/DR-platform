@@ -174,12 +174,38 @@ export async function approveRecoveryRecommendation(workloadId, { signal } = {})
 }
 
 export async function executeRecoveryRestore(workloadId, { signal } = {}) {
-  return postJson("/api/clusters/cloud-primary/restores", {
+  const safeWorkloadId = toKubernetesName(workloadId);
+  const restoreName = `${safeWorkloadId}-restore-${Date.now().toString(36)}`.slice(0, 63).replace(/-+$/, "");
+  const targetClusterId = "edge-recovery";
+
+  const payload = await postJson("/api/clusters/cloud-primary/restores", {
     body: {
+      restoreName,
       backupName: "latest",
-      targetNamespace: workloadId,
+      targetClusterId,
+      namespaces: [safeWorkloadId],
       confirm: true,
     },
     signal,
   });
+
+  return {
+    ...payload,
+    requestedRestoreName: restoreName,
+    requestedTargetClusterId: targetClusterId,
+  };
+}
+
+export async function loadRestoreStatus(clusterId, restoreName, { signal } = {}) {
+  return getJson(`/api/clusters/${encodeURIComponent(clusterId)}/restores/${encodeURIComponent(restoreName)}`, { signal });
+}
+
+function toKubernetesName(value) {
+  return String(value || "workload")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-")
+    .slice(0, 40) || "workload";
 }

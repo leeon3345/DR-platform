@@ -53,18 +53,19 @@ Main product direction:
 - TASK-14: Docker Compose packaging added for the backend API and nginx-served dashboard, with `.env.api.example`, zrok share helper script, deployment quickstart, dashboard `/api` proxying, and Git-ignored local env handling.
 - TASK-15: Landing page (`/`) with hero, architecture flow, and feature cards added. Agent installation guide page (`/download`) with step-by-step onboarding flow added. React Router routes connect `/`, `/download`, and `/dashboard`. Platform URL reads from `VITE_PLATFORM_URL`. No API calls on public pages.
 - TASK-16: Recovery Decision panel added below topology with ranked AI recommendations, explicit operator confirmation, recommendation approval, TASK-05 restore execution, same-session duplicate prevention, approved badges, manual refresh, empty/error states, and Edge K3s Restore topology state after restore trigger.
+- TASK-17: Restore Progress panel added after operator approval, with restore execution response tracking, 10-second restore status polling, 1-second elapsed timer, progress phase display, RTO actual vs target, Failed retry path, and Edge K3s Recovered topology state after completion.
 
 ## Current Next Task
 
 ```text
-TASK-17 should be drafted.
+TASK-18 should be drafted.
 ```
 
 Likely next focus:
-- Add restore progress tracking and dashboard status for agent-executed restores.
-- Poll restore status after TASK-16 approval-triggered restore execution.
-- Add TASK-17 recovery progress panel that shows restore phase, workload readiness, and final Edge K3s readiness.
-- Consider extending restore status to agent-owned clusters if platform-side pending command creation is introduced.
+- Live-verify TASK-17 against a running backend and real Velero restore status transitions.
+- Add restore workload readiness checks after Velero reports completion.
+- Add richer restore history so completed progress survives page reloads.
+- Consider extending restore progress tracking to token-owned user clusters if platform-side pending command creation is introduced.
 - Live-verify TASK-14 with a real `.env.api`, `docker compose up -d --build`, zrok shares, external API/dashboard URLs, and an agent reaching the API through zrok.
 - Add platform-side pending restore command creation tied to approved recommendations and token-owned target clusters.
 - Provide Alertmanager webhook configuration and PrometheusRule manifests as installable assets if they should live beside the agent chart.

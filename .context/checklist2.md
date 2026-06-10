@@ -253,9 +253,42 @@ TASK-16 verified values:
 - Recommendation source: `GET /api/clusters/cloud-primary/recommendations` through existing dashboard data loading.
 - Approval endpoint: `POST /api/clusters/cloud-primary/recommendations/:workloadId/approve`.
 - Restore execution endpoint: `POST /api/clusters/cloud-primary/restores`.
-- Restore execution body: `{ backupName: "latest", targetNamespace: workloadId, confirm: true }`.
+- Restore execution body: `{ restoreName, backupName: "latest", targetClusterId: "edge-recovery", namespaces: [workloadId], confirm: true }`.
 - Confirmation message: `이 작업은 Edge K3s에 복구를 실행합니다. 계속하시겠습니까?`.
 - Duplicate prevention scope: same dashboard session via approved workload state.
 - Topology restore marker: Edge K3s node status label `Restore` after restore trigger.
 - Manual refresh: Recovery Decision panel `새로고침` button.
+
+## TASK-17: Restore Progress Tracking UI
+
+Status: Done
+
+- [x] Add Restore Progress panel that appears after TASK-16 operator approval.
+- [x] Preserve Recovery Decision panel visibility while restore progress is active.
+- [x] Store restore execution response values including restoreName and target cluster.
+- [x] Poll `GET /api/clusters/:clusterId/restores/:restoreName` every 10 seconds.
+- [x] Stop restore status polling after `Completed` or `Failed`.
+- [x] Show restore phase and progress bar from restore status.
+- [x] Update elapsed time every second on the client.
+- [x] Show started time and restore estimate label.
+- [x] Calculate RTO actual vs target after completion.
+- [x] Use Alertmanager `startsAt` when available for RTO start, with restore start fallback.
+- [x] Update Edge K3s topology node to `Recovered` after restore completion.
+- [x] Keep in-progress restore topology flow purple until completion.
+- [x] Show failed restore message without exposing Velero command details.
+- [x] Allow failed restore retry through the existing approval flow.
+- [x] Keep browser-side code free of shell execution.
+- [x] Verify frontend build succeeds.
+
+TASK-17 verified values:
+- Updated frontend API file: `src/api.js`.
+- Updated frontend dashboard file: `src/App.jsx`.
+- Restore status API helper: `loadRestoreStatus(clusterId, restoreName)`.
+- Restore execute body now includes `restoreName`, `targetClusterId: "edge-recovery"`, `namespaces`, and `confirm: true`.
+- Restore status polling interval: `10000` ms.
+- Restore elapsed timer interval: `1000` ms.
+- Completed panel auto-dismiss delay: `60000` ms.
+- Terminal restore phases: `Completed`, `Failed`.
+- Topology completion marker: Edge K3s node status `Recovered`.
+- Build verification: `npm run build`.
 - Build verification: `npm run build`.
