@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { Routes, Route } from "react-router-dom";
+import LandingPage from "./LandingPage";
+import DownloadPage from "./DownloadPage";
 import {
   Background,
   BaseEdge,
@@ -1978,7 +1981,7 @@ function ClusterList({ clusters, activeClusterId, onSelect }) {
   );
 }
 
-function App() {
+function Dashboard() {
   const [dashboardToken] = useState(() => initializeDashboardToken());
   const [activeClusterId, setActiveClusterId] = useState(clusterScenarios[0].id);
   const [apiResults, setApiResults] = useState(null);
@@ -2265,6 +2268,16 @@ function App() {
         />
       </div>
     </main>
+  );
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/download" element={<DownloadPage />} />
+      <Route path="/dashboard" element={<Dashboard />} />
+    </Routes>
   );
 }
 

@@ -201,3 +201,35 @@ TASK-14 verified values:
 - Whitespace verification: `git diff --check`.
 - Script syntax verification: `bash -n scripts/zrok-share.sh`.
 - Compose config was not fully verified because `.env.api` is intentionally not present in the repository.
+
+## TASK-15: Landing Page and Agent Download Page
+
+Status: Done
+
+- [x] Add `/` landing page with hero section, architecture flow, and feature cards.
+- [x] Add `/download` agent installation guide page with step-by-step onboarding flow.
+- [x] Add React Router routes for `/`, `/download`, and `/dashboard`.
+- [x] Install `react-router-dom` dependency.
+- [x] Wrap app root with `BrowserRouter` in `main.jsx`.
+- [x] Rename existing `App` function to `Dashboard` and add routing `App` wrapper.
+- [x] Read platform URL from `VITE_PLATFORM_URL` environment variable on download page.
+- [x] Keep landing and download pages fully static with no API calls.
+- [x] Keep existing `/dashboard` behavior unchanged.
+- [x] Add navigation between all three routes without full page reload.
+- [x] Add meta description and Google Fonts (Inter) to `index.html`.
+- [x] Add landing and download page CSS styles without modifying existing dashboard styles.
+- [x] Pages are readable on desktop viewport.
+- [x] No token values, SSH passwords, or internal cluster details exposed on public pages.
+- [x] Verify frontend build succeeds.
+
+TASK-15 verified values:
+- New frontend files: `src/LandingPage.jsx`, `src/DownloadPage.jsx`.
+- Updated frontend files: `src/App.jsx`, `src/main.jsx`, `src/styles.css`.
+- Updated HTML file: `index.html`.
+- Added dependency: `react-router-dom`.
+- Route `/`: landing page with hero, architecture diagram, feature cards, and CTA.
+- Route `/download`: step-by-step onboarding guide (drctl install, Velero, Helm, policy, dashboard).
+- Route `/dashboard`: existing dashboard component unchanged.
+- Platform URL source: `import.meta.env.VITE_PLATFORM_URL` with fallback `https://your-platform.zrok.io`.
+- Build verification: `npm run build`.
+

@@ -51,11 +51,12 @@ Main product direction:
 - TASK-12: Token-based user cluster isolation added with dashboard token issuance, Git-ignored token registry, scoped cluster APIs, agent registration ownership mapping, and dashboard URL/sessionStorage token handling.
 - TASK-13: `drctl` CLI package added with core API-backed operator commands for registration, cluster listing/validation, policy updates, recommendations, JSON output, local config, safe errors, and local npm linking.
 - TASK-14: Docker Compose packaging added for the backend API and nginx-served dashboard, with `.env.api.example`, zrok share helper script, deployment quickstart, dashboard `/api` proxying, and Git-ignored local env handling.
+- TASK-15: Landing page (`/`) with hero, architecture flow, and feature cards added. Agent installation guide page (`/download`) with step-by-step onboarding flow added. React Router routes connect `/`, `/download`, and `/dashboard`. Platform URL reads from `VITE_PLATFORM_URL`. No API calls on public pages.
 
 ## Current Next Task
 
 ```text
-TASK-15 should be drafted.
+TASK-16 should be drafted.
 ```
 
 Likely next focus:
@@ -77,6 +78,8 @@ Frontend:
 
 ```text
 src/App.jsx
+src/LandingPage.jsx
+src/DownloadPage.jsx
 src/api.js
 src/styles.css
 ```
