@@ -28,6 +28,8 @@ const tokenRegistryUrl = new URL('./registry/tokens.json', import.meta.url);
 const tokenRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
 const rtoHistoryRegistryUrl = new URL('./registry/rto-history.json', import.meta.url);
 const rtoHistoryRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
+const alertHistoryRegistryUrl = new URL('./registry/alert-history.json', import.meta.url);
+const alertHistoryRegistryDirectoryUrl = new URL('./registry/', import.meta.url);
 const alertEventHistoryLimit = 20;
 const rtoHistoryLimit = 50;
 const alertEventHistory = [];
@@ -229,6 +231,39 @@ async function removeCluster({ params, auth }) {
 
 async function validateCluster({ params }) {
   const cluster = await getCluster(params.clusterId);
+
+  if (cluster.kind === 'user-k8s') {
+    const status = normalizeAgentNodeStatus(cluster);
+    const connected = isAgentConnected(cluster);
+
+    return {
+      clusterId: cluster.id,
+      valid: connected && status.healthStatus === 'Ready',
+      checkedAt: new Date().toISOString(),
+      checks: [
+        {
+          name: 'registry-profile',
+          status: 'passed',
+          message: 'Cluster profile is structurally valid',
+        },
+        {
+          name: 'agent-heartbeat',
+          status: connected ? 'passed' : 'failed',
+          message: connected ? 'Agent heartbeat is current' : 'Agent heartbeat is stale or missing',
+        },
+        {
+          name: 'node-status',
+          status: status.healthStatus === 'Ready' ? 'passed' : 'failed',
+          message: `${status.readyNodes}/${status.totalNodes} nodes Ready`,
+          details: {
+            nodeName: status.nodeName,
+            nodeIp: status.nodeIp,
+            kubernetesVersion: status.kubernetesVersion,
+          },
+        },
+      ],
+    };
+  }
 
   try {
     assertCapability(cluster, 'nodeStatus');
@@ -460,13 +495,32 @@ async function getClusterTopology({ params, auth }) {
   };
 }
 
-async function getVeleroLocation() {
-  const cluster = await getCluster('cloud-primary');
+async function getVeleroLocation({ params } = {}) {
+  const cluster = await getCluster(params?.clusterId || 'cloud-primary');
+
+  if (cluster.kind === 'user-k8s') {
+    const backups = cluster.agent?.state?.backups || [];
+    const hasCompletedBackup = backups.some((backup) => backup.phase === 'Completed' || backup.status === 'Completed');
+
+    return {
+      clusterId: cluster.id,
+      locationName: 'agent-reported',
+      provider: 'velero-agent',
+      bucket: null,
+      s3Url: null,
+      phase: hasCompletedBackup ? 'Available' : 'Unknown',
+      accessMode: 'ReadWrite',
+      lastValidationTimestamp: cluster.agent?.lastCollectedAt || cluster.agent?.lastHeartbeatAt || null,
+      lastCheckedTimestamp: new Date().toISOString(),
+    };
+  }
+
   assertCapability(cluster, 'veleroLocation');
   const result = await runSshCommand(cluster, cluster.commands.veleroLocation);
-  const location = parseJsonCommand(result.stdout, 'cloud-primary:veleroLocation');
+  const location = parseJsonCommand(result.stdout, `${cluster.id}:veleroLocation`);
 
   return {
+    clusterId: cluster.id,
     locationName: location.metadata?.name || 'default',
     provider: location.spec?.provider || null,
     bucket: location.spec?.objectStorage?.bucket || null,
@@ -547,23 +601,27 @@ async function previewRestore({ request, params, auth }) {
   const input = normalizeRestoreRequest(await readJsonBody(request), { preview: true });
   await assertTokenCanAccessCluster(auth, input.targetClusterId);
   const targetCluster = await getCluster(input.targetClusterId);
-  assertCapability(sourceCluster, 'backupStatus');
   assertCapability(targetCluster, 'restoreExecute');
 
-  const sourceBackup = await fetchBackup(sourceCluster, input.backupName);
-  const manifest = buildRestoreManifest(input, sourceCluster.id);
+  const sourceBackup = await resolveBackupForRestore(sourceCluster, input.backupName);
+  const restoreInput = {
+    ...input,
+    backupName: sourceBackup.backupName || input.backupName,
+  };
+  const namespaceMappingSource = sourceCluster.id === targetCluster.id ? null : sourceCluster.id;
+  const manifest = buildRestoreManifest(restoreInput, namespaceMappingSource);
 
   return {
     preview: {
-      restoreName: input.restoreName,
-      backupName: input.backupName,
+      restoreName: restoreInput.restoreName,
+      backupName: restoreInput.backupName,
       sourceClusterId: sourceCluster.id,
       targetClusterId: targetCluster.id,
-      namespaces: input.namespaces,
-      labels: input.labels,
+      namespaces: restoreInput.namespaces,
+      labels: restoreInput.labels,
       dryRun: true,
       manifest,
-      sourceBackup: normalizeBackup(sourceBackup),
+      sourceBackup,
       previewTimestamp: new Date().toISOString(),
     },
   };
@@ -576,32 +634,36 @@ async function createRestore({ request, params, auth }) {
   const input = normalizeRestoreRequest(await readJsonBody(request), { preview: false });
   await assertTokenCanAccessCluster(auth, input.targetClusterId);
   const targetCluster = await getCluster(input.targetClusterId);
-  assertCapability(sourceCluster, 'backupStatus');
   assertCapability(targetCluster, 'restoreExecute');
 
-  const sourceBackup = await fetchBackup(sourceCluster, input.backupName);
-  const manifest = buildRestoreManifest(input, sourceCluster.id);
+  const sourceBackup = await resolveBackupForRestore(sourceCluster, input.backupName);
+  const restoreInput = {
+    ...input,
+    backupName: sourceBackup.backupName || input.backupName,
+  };
+  const namespaceMappingSource = sourceCluster.id === targetCluster.id ? null : sourceCluster.id;
+  const manifest = buildRestoreManifest(restoreInput, namespaceMappingSource);
 
   if (targetCluster.kind === 'user-k8s') {
-    const command = enqueueAgentRestoreCommand(targetCluster, input);
-    await recordRestoreStarted(sourceCluster.id, input, command.createdAt);
+    const command = enqueueAgentRestoreCommand(targetCluster, restoreInput);
+    await recordRestoreStarted(sourceCluster.id, restoreInput, command.createdAt);
 
     return {
       statusCode: 202,
       payload: {
         restore: {
-          restoreName: input.restoreName,
-          backupName: input.backupName,
+          restoreName: restoreInput.restoreName,
+          backupName: restoreInput.backupName,
           status: 'PendingAgent',
           errors: 0,
           warnings: 0,
           createdTimestamp: command.createdAt,
           startTimestamp: null,
           completionTimestamp: null,
-          includedNamespaces: input.namespaces,
+          includedNamespaces: restoreInput.namespaces,
         },
         command,
-        sourceBackup: normalizeBackup(sourceBackup),
+        sourceBackup,
         sourceClusterId: sourceCluster.id,
         targetClusterId: targetCluster.id,
         acceptedTimestamp: command.createdAt,
@@ -619,7 +681,7 @@ async function createRestore({ request, params, auth }) {
 
   await recordRestoreStarted(
     sourceCluster.id,
-    input,
+    restoreInput,
     normalizedRestore.startTimestamp || normalizedRestore.createdTimestamp || acceptedTimestamp,
   );
 
@@ -627,7 +689,7 @@ async function createRestore({ request, params, auth }) {
     statusCode: 202,
     payload: {
       restore: normalizedRestore,
-      sourceBackup: normalizeBackup(sourceBackup),
+      sourceBackup,
       sourceClusterId: sourceCluster.id,
       targetClusterId: targetCluster.id,
       acceptedTimestamp,
@@ -808,9 +870,11 @@ async function approveRecoveryRecommendation({ params }) {
 async function receiveAlertEvent({ request }) {
   const input = await readJsonBody(request);
   const events = normalizeAlertmanagerPayload(input);
+  const history = await readAlertEventHistory();
+  const nextHistory = [...events, ...history].slice(0, alertEventHistoryLimit);
 
-  alertEventHistory.unshift(...events);
-  alertEventHistory.splice(alertEventHistoryLimit);
+  alertEventHistory.splice(0, alertEventHistory.length, ...nextHistory);
+  await writeAlertEventHistory(nextHistory);
   await recordAlertDetected(events);
 
   return {
@@ -818,20 +882,24 @@ async function receiveAlertEvent({ request }) {
     payload: {
       accepted: true,
       events,
-      latest: alertEventHistory[0] || null,
+      latest: nextHistory[0] || null,
     },
   };
 }
 
 async function getLatestAlertEvent() {
+  const history = await readAlertEventHistory();
+
   return {
-    event: alertEventHistory[0] || null,
+    event: history[0] || null,
   };
 }
 
 async function getAlertEventHistory() {
+  const history = await readAlertEventHistory();
+
   return {
-    events: alertEventHistory.slice(0, alertEventHistoryLimit),
+    events: history.slice(0, alertEventHistoryLimit),
   };
 }
 
@@ -875,9 +943,11 @@ async function registerAgent({ request }) {
       backupHistory: true,
       restoreExecute: true,
       restoreStatus: true,
+      restorePreview: true,
       workloads: true,
       metrics: true,
       backupFreshness: true,
+      backupStatus: true,
       restoreReadiness: true,
       topology: true,
     },
@@ -1120,6 +1190,18 @@ function normalizeAgentNodeStatus(cluster) {
   };
 }
 
+function isAgentConnected(cluster) {
+  const timestamp = cluster.agent?.lastHeartbeatAt;
+
+  if (!timestamp) {
+    return false;
+  }
+
+  const lastHeartbeatAt = new Date(timestamp).getTime();
+
+  return Number.isFinite(lastHeartbeatAt) && Date.now() - lastHeartbeatAt <= 90000;
+}
+
 function normalizeAgentWorkloads(cluster) {
   const workloads = cluster.agent?.state?.workloads || {};
   const runningPods = workloads.runningPods || 0;
@@ -1129,6 +1211,17 @@ function normalizeAgentWorkloads(cluster) {
     namespace,
     podCount: null,
   }));
+  const namespaceHealth = Array.isArray(workloads.namespaceHealth) && workloads.namespaceHealth.length
+    ? workloads.namespaceHealth
+    : namespaces.map(({ namespace }) => ({
+      namespace,
+      totalPods: 0,
+      runningPods: 0,
+      pendingPods: 0,
+      failedPods: 0,
+      succeededPods: 0,
+      unknownPods: 0,
+    }));
   const totalPods = runningPods + pendingPods + failedPods;
 
   return {
@@ -1143,15 +1236,7 @@ function normalizeAgentWorkloads(cluster) {
       unknownPods: 0,
       restartCount: 0,
       namespaces,
-      namespaceHealth: namespaces.map(({ namespace }) => ({
-        namespace,
-        totalPods: 0,
-        runningPods: 0,
-        pendingPods: 0,
-        failedPods: 0,
-        succeededPods: 0,
-        unknownPods: 0,
-      })),
+      namespaceHealth,
     },
     pods: [],
     nodeName: cluster.nodeName,
@@ -1588,8 +1673,7 @@ async function readRecoveryPolicyRegistry() {
 }
 
 async function writeRecoveryPolicyRegistry(registry) {
-  await fs.mkdir(recoveryPolicyRegistryDirectoryUrl, { recursive: true });
-  await fs.writeFile(recoveryPolicyRegistryUrl, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(recoveryPolicyRegistryUrl, recoveryPolicyRegistryDirectoryUrl, registry);
 }
 
 async function readTokenRegistry() {
@@ -1615,8 +1699,7 @@ async function readTokenRegistry() {
 }
 
 async function writeTokenRegistry(registry) {
-  await fs.mkdir(tokenRegistryDirectoryUrl, { recursive: true });
-  await fs.writeFile(tokenRegistryUrl, `${JSON.stringify(normalizeTokenRegistry(registry), null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(tokenRegistryUrl, tokenRegistryDirectoryUrl, normalizeTokenRegistry(registry));
 }
 
 function normalizeTokenRegistry(registry) {
@@ -1689,8 +1772,50 @@ async function readRtoHistoryRegistry() {
 }
 
 async function writeRtoHistoryRegistry(registry) {
-  await fs.mkdir(rtoHistoryRegistryDirectoryUrl, { recursive: true });
-  await fs.writeFile(rtoHistoryRegistryUrl, `${JSON.stringify(normalizeRtoHistoryRegistry(registry), null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(rtoHistoryRegistryUrl, rtoHistoryRegistryDirectoryUrl, normalizeRtoHistoryRegistry(registry));
+}
+
+async function readAlertEventHistory() {
+  try {
+    const text = await fs.readFile(alertHistoryRegistryUrl, 'utf8');
+    const registry = JSON.parse(text);
+    const events = Array.isArray(registry?.events)
+      ? registry.events.map(normalizeAlertEventRecord).filter(Boolean)
+      : [];
+
+    alertEventHistory.splice(0, alertEventHistory.length, ...events.slice(0, alertEventHistoryLimit));
+
+    return alertEventHistory.slice(0, alertEventHistoryLimit);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return alertEventHistory.slice(0, alertEventHistoryLimit);
+    }
+
+    if (error instanceof SyntaxError) {
+      throw new RegistryError('Alert history registry contains invalid JSON', {
+        code: 'INVALID_ALERT_HISTORY_REGISTRY',
+        statusCode: 500,
+      });
+    }
+
+    throw error;
+  }
+}
+
+async function writeAlertEventHistory(events) {
+  const history = events.map(normalizeAlertEventRecord).filter(Boolean).slice(0, alertEventHistoryLimit);
+
+  await writeJsonFileAtomic(alertHistoryRegistryUrl, alertHistoryRegistryDirectoryUrl, {
+    events: history,
+  });
+}
+
+async function writeJsonFileAtomic(fileUrl, directoryUrl, value) {
+  const tempUrl = new URL(`./.${crypto.randomBytes(8).toString('hex')}.tmp`, directoryUrl);
+
+  await fs.mkdir(directoryUrl, { recursive: true });
+  await fs.writeFile(tempUrl, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await fs.rename(tempUrl, fileUrl);
 }
 
 function normalizeRtoHistoryRegistry(registry) {
@@ -1744,6 +1869,39 @@ function normalizeRtoEventRecord(event) {
     createdAt: normalizeOptionalRtoTimestamp(event.createdAt) || new Date().toISOString(),
     updatedAt: normalizeOptionalRtoTimestamp(event.updatedAt) || new Date().toISOString(),
   };
+}
+
+function normalizeAlertEventRecord(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    return null;
+  }
+
+  try {
+    const receivedAt = normalizeOptionalRtoTimestamp(event.receivedAt) || new Date().toISOString();
+    const status = normalizeAlertStatus(event.status);
+    const alertname = normalizeAlertField(event.alertname, 'alertname', { required: true });
+    const namespace = normalizeAlertField(event.namespace, 'namespace', { required: false });
+    const severity = normalizeAlertSeverity(event.severity, status);
+    const clusterId = normalizeAlertField(event.clusterId || 'user-k8s', 'clusterId', { required: false }) || 'user-k8s';
+    const startsAt = normalizeOptionalRtoTimestamp(event.startsAt);
+    const id = typeof event.id === 'string' && event.id.length <= 80 && !/[\r\n]/.test(event.id)
+      ? event.id
+      : buildAlertEventId(receivedAt, ++alertEventSequence);
+
+    return {
+      id,
+      receivedAt,
+      source: 'alertmanager',
+      status,
+      alertname,
+      namespace,
+      severity,
+      clusterId,
+      startsAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function getRtoClusterState(registry, clusterId) {
@@ -1853,30 +2011,32 @@ async function recordRecoveryApproval(clusterId, namespace, approvedAt) {
 }
 
 async function recordRestoreStarted(clusterId, input, restoreStartedAt) {
-  const namespace = input.namespaces[0];
   const policyRegistry = await readRecoveryPolicyRegistry();
   const registry = await readRtoHistoryRegistry();
   const state = getRtoClusterState(registry, clusterId);
-  const target = resolveRtoTarget(policyRegistry, clusterId, namespace);
-  const record = findOpenRtoEvent(state.events, namespace) || {
-    id: createRtoEventId(),
-    namespace,
-    createdAt: restoreStartedAt,
-  };
 
-  Object.assign(record, {
-    restoreName: input.restoreName,
-    backupName: input.backupName,
-    targetClusterId: input.targetClusterId,
-    restoreStartedAt: record.restoreStartedAt || restoreStartedAt,
-    targetRtoMinutes: record.targetRtoMinutes ?? target.targetRtoMinutes,
-    targetRtoLabel: record.targetRtoLabel || target.targetRtoLabel,
-    updatedAt: restoreStartedAt,
+  input.namespaces.forEach((namespace) => {
+    const target = resolveRtoTarget(policyRegistry, clusterId, namespace);
+    const record = findOpenRtoEvent(state.events, namespace) || {
+      id: createRtoEventId(),
+      namespace,
+      createdAt: restoreStartedAt,
+    };
+
+    Object.assign(record, {
+      restoreName: input.restoreName,
+      backupName: input.backupName,
+      targetClusterId: input.targetClusterId,
+      restoreStartedAt: record.restoreStartedAt || restoreStartedAt,
+      targetRtoMinutes: record.targetRtoMinutes ?? target.targetRtoMinutes,
+      targetRtoLabel: record.targetRtoLabel || target.targetRtoLabel,
+      updatedAt: restoreStartedAt,
+    });
+
+    if (!state.events.includes(record)) {
+      state.events.unshift(record);
+    }
   });
-
-  if (!state.events.includes(record)) {
-    state.events.unshift(record);
-  }
 
   trimRtoHistory(registry);
   await writeRtoHistoryRegistry(registry);
@@ -1938,7 +2098,7 @@ function findOpenRtoEvent(events, namespace) {
 }
 
 function resolveRtoSourceClusterId(clusterId) {
-  return managementClusterIds.has(clusterId) ? clusterId : 'cloud-primary';
+  return clusterId || 'cloud-primary';
 }
 
 function resolveRtoTarget(policyRegistry, clusterId, namespace) {
@@ -2284,7 +2444,7 @@ async function generateRecommendationExplanation(recommendation) {
           },
         ],
         temperature: 0.2,
-        max_tokens: 180,
+        max_tokens: getLlmMaxTokens(),
       }),
       signal: AbortSignal.timeout(8000),
     });
@@ -2342,6 +2502,16 @@ function sanitizeExplanation(value) {
     .slice(0, 900);
 }
 
+function getLlmMaxTokens() {
+  const value = Number.parseInt(process.env.LLM_MAX_TOKENS || '180', 10);
+
+  if (!Number.isFinite(value)) {
+    return 180;
+  }
+
+  return Math.min(300, Math.max(60, value));
+}
+
 function minutesSince(timestamp) {
   const date = new Date(timestamp);
 
@@ -2354,6 +2524,44 @@ function minutesSince(timestamp) {
 
 function findServicePort(ports, portNumber) {
   return ports.find((port) => port.port === portNumber || port.targetPort === portNumber);
+}
+
+async function resolveBackupForRestore(cluster, backupName) {
+  if (backupName === 'latest') {
+    const history = await getBackupHistory({ params: { clusterId: cluster.id } });
+    const backup = history.backups.find((candidate) => candidate.status === 'Completed') || history.backups[0];
+
+    if (!backup) {
+      throw new RegistryError('No backup is available for restore', {
+        code: 'BACKUP_NOT_FOUND',
+        statusCode: 404,
+        details: { clusterId: cluster.id, backupName },
+      });
+    }
+
+    return backup;
+  }
+
+  if (cluster.kind === 'user-k8s') {
+    const backup = (cluster.agent?.state?.backups || [])
+      .map(normalizeAgentBackup)
+      .find((candidate) => candidate.backupName === backupName);
+
+    if (!backup) {
+      throw new RegistryError('Agent backup not found', {
+        code: 'BACKUP_NOT_FOUND',
+        statusCode: 404,
+        details: { clusterId: cluster.id, backupName },
+      });
+    }
+
+    return backup;
+  }
+
+  assertCapability(cluster, 'backupStatus');
+  const backup = await fetchBackup(cluster, backupName);
+
+  return normalizeBackup(backup);
 }
 
 async function fetchBackup(cluster, backupName) {
@@ -2559,7 +2767,7 @@ function normalizeAlertmanagerAlert(alert, { commonLabels, payloadStatus, receiv
     alertname,
     namespace,
     severity,
-    clusterId: 'user-k8s',
+    clusterId: labels.clusterId ?? fallbackLabels.clusterId ?? 'user-k8s',
     startsAt,
   };
 }
@@ -2876,6 +3084,21 @@ function getRoute(method, pathname) {
           params: { clusterId, restoreName: itemName },
         };
       }
+    }
+
+    return null;
+  }
+
+  const veleroLocationMatch = pathname.match(/^\/api\/clusters\/([^/]+)\/velero\/location$/);
+
+  if (veleroLocationMatch) {
+    const [, clusterId] = veleroLocationMatch;
+
+    if (method === 'GET') {
+      return {
+        handler: getVeleroLocation,
+        params: { clusterId },
+      };
     }
 
     return null;

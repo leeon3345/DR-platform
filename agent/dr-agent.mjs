@@ -5,6 +5,8 @@ const execFileAsync = promisify(execFile);
 const platformUrl = normalizePlatformUrl(process.env.PLATFORM_URL);
 const clusterId = normalizeName(process.env.CLUSTER_ID || 'user-k8s', 'CLUSTER_ID');
 const pollInterval = normalizeInterval(process.env.POLL_INTERVAL || '30000');
+const restorePollInterval = normalizeInterval(process.env.RESTORE_POLL_INTERVAL || '5000');
+const restorePollAttempts = normalizePositiveInteger(process.env.RESTORE_POLL_ATTEMPTS || '36', 36);
 let clusterToken = process.env.CLUSTER_TOKEN?.trim() || '';
 
 await start();
@@ -110,12 +112,44 @@ async function collectWorkloads() {
     const podList = await runJson('kubectl', ['get', 'pods', '-A', '-o', 'json']);
     const pods = podList.items || [];
     const namespaces = [...new Set(pods.map((pod) => pod.metadata?.namespace || 'default'))].sort();
+    const namespaceHealth = Object.values(pods.reduce((accumulator, pod) => {
+      const namespace = pod.metadata?.namespace || 'default';
+      const phase = pod.status?.phase || 'Unknown';
+
+      accumulator[namespace] ??= {
+        namespace,
+        totalPods: 0,
+        runningPods: 0,
+        pendingPods: 0,
+        failedPods: 0,
+        succeededPods: 0,
+        unknownPods: 0,
+      };
+
+      const health = accumulator[namespace];
+      health.totalPods += 1;
+
+      if (phase === 'Running') {
+        health.runningPods += 1;
+      } else if (phase === 'Pending') {
+        health.pendingPods += 1;
+      } else if (phase === 'Failed') {
+        health.failedPods += 1;
+      } else if (phase === 'Succeeded') {
+        health.succeededPods += 1;
+      } else {
+        health.unknownPods += 1;
+      }
+
+      return accumulator;
+    }, {})).sort((left, right) => right.totalPods - left.totalPods || left.namespace.localeCompare(right.namespace));
 
     return {
       runningPods: pods.filter((pod) => pod.status?.phase === 'Running').length,
       pendingPods: pods.filter((pod) => pod.status?.phase === 'Pending').length,
       failedPods: pods.filter((pod) => pod.status?.phase === 'Failed').length,
       namespaces,
+      namespaceHealth,
     };
   } catch (error) {
     logError('kubectl workload collection failed', error);
@@ -124,6 +158,7 @@ async function collectWorkloads() {
       pendingPods: 0,
       failedPods: 0,
       namespaces: [],
+      namespaceHealth: [],
     };
   }
 }
@@ -164,6 +199,7 @@ async function handleCommand(command) {
     const phase = result.status?.phase || 'Submitted';
 
     await reportStatus({ operationId, restoreName, backupName, phase, message: 'Velero restore command submitted' });
+    await pollRestoreStatus({ operationId, restoreName, backupName });
   } catch (error) {
     logError(`restore ${restoreName} failed`, error);
     await reportStatus({ operationId, restoreName, backupName, phase: 'Failed', message: sanitizeMessage(error.message) });
@@ -186,6 +222,40 @@ async function executeRestoreCommand({ restoreName, backupName, namespaces, labe
   args.push('-o', 'json');
 
   return runJson('velero', args);
+}
+
+async function pollRestoreStatus({ operationId, restoreName, backupName }) {
+  for (let attempt = 0; attempt < restorePollAttempts; attempt += 1) {
+    await delay(restorePollInterval);
+
+    try {
+      const restore = await runJson('velero', ['restore', 'get', restoreName, '-o', 'json']);
+      const phase = restore.status?.phase || 'Submitted';
+      const message = isTerminalRestorePhase(phase)
+        ? `Velero restore ${phase}`
+        : 'Velero restore is still running';
+
+      await reportStatus({ operationId, restoreName, backupName, phase, message });
+
+      if (isTerminalRestorePhase(phase)) {
+        return;
+      }
+    } catch (error) {
+      logError(`restore ${restoreName} status poll failed`, error);
+    }
+  }
+
+  await reportStatus({
+    operationId,
+    restoreName,
+    backupName,
+    phase: 'Submitted',
+    message: 'Velero restore submitted; completion not observed before agent poll timeout',
+  });
+}
+
+function isTerminalRestorePhase(phase) {
+  return ['Completed', 'Failed', 'PartiallyFailed'].includes(String(phase || ''));
 }
 
 async function reportStatus(body) {
@@ -253,6 +323,18 @@ function normalizeInterval(value) {
   }
 
   return interval;
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const integer = Number.parseInt(value, 10);
+
+  return Number.isInteger(integer) && integer > 0 ? integer : fallback;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function normalizeName(value, fieldName) {

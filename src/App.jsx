@@ -741,8 +741,8 @@ function getAlertTargetNodes(alert) {
   const clusterId = String(alert.clusterId || "").toLowerCase();
 
   if (
-    ["order-service", "auth-service"].includes(alert.namespace) ||
-    ["cloud-primary", "prod-cloud-main", "user-k8s"].includes(clusterId) ||
+    ["order-service", "auth-service", "analytics"].includes(alert.namespace) ||
+    ["cloud-primary", "prod-cloud-main", "user-k8s", "my-cluster"].includes(clusterId) ||
     alert.alertname === "NodeNotReady"
   ) {
     targets.add("cloud-k8s");
@@ -1959,7 +1959,7 @@ function RestoreProgressPanel({ operation, clock, incidentStartedAt, rtoTarget, 
             Restore Progress
           </h2>
           <p className="text-xs font-medium text-slate-500">
-            {operation.workloadId} → Edge K3s ({operation.targetClusterId})
+            {operation.workloadId} → {operation.targetClusterId}
           </p>
         </div>
         <span className={`inline-flex w-fit items-center rounded-full px-3 py-1 text-xs font-black ring-1 ${
@@ -2048,7 +2048,7 @@ function RestoreProgressPanel({ operation, clock, incidentStartedAt, rtoTarget, 
 
       {completed && (
         <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-          복구 완료. Edge K3s 노드가 Recovered 상태로 전환되었습니다.
+          복구 완료. 대상 클러스터가 Recovered 상태로 전환되었습니다.
         </div>
       )}
     </section>
@@ -2112,7 +2112,7 @@ function getRtoTimelineStages(event) {
     ["AI 추천 생성 완료", "Recovery policy scoring", event.recommendationAt, "bg-sky-500"],
     ["운영자 승인", "Human-in-the-loop", event.approvedAt, "bg-emerald-500"],
     ["Velero Restore 시작", event.restoreName || "Restore accepted", event.restoreStartedAt, "bg-violet-500"],
-    ["복구 완료", "Edge K3s recovered", event.restoreCompletedAt, "bg-emerald-500"],
+    ["복구 완료", "Target cluster recovered", event.restoreCompletedAt, "bg-emerald-500"],
   ];
 }
 
@@ -2247,7 +2247,7 @@ function RtoMeasurementPanel({ history, loading, error, clock, onRefresh }) {
             <Icon name="pulse" className="h-4 w-4 text-emerald-600" />
             RTO 타임라인{latest?.namespace ? ` · ${latest.namespace}` : ""}
           </h2>
-          <p className="text-xs font-medium text-slate-500">장애 감지부터 Edge K3s 복구 완료까지의 측정값</p>
+          <p className="text-xs font-medium text-slate-500">장애 감지부터 대상 클러스터 복구 완료까지의 측정값</p>
         </div>
         <button
           type="button"
@@ -2343,17 +2343,20 @@ function RtoMeasurementPanel({ history, loading, error, clock, onRefresh }) {
 
 function RecoveryRecommendationPanel({
   recommendations,
+  clusterId,
   loading,
   error,
   approvalError,
-  pendingWorkloadId,
+  isApproving,
   approvedWorkloads,
+  rtoHistory,
   failedRestoreWorkloadId,
   restoreWorkloadId,
   hasActiveAlert,
   onApprove,
   onRefresh,
 }) {
+  const [selectedItems, setSelectedItems] = useState(new Set());
   const hasRecoveryActivity = Boolean(restoreWorkloadId) || Object.keys(approvedWorkloads).length > 0;
   const shouldShowEmptyState = !loading && !error && !hasActiveAlert && !hasRecoveryActivity;
   const visibleRecommendations = shouldShowEmptyState ? [] : recommendations;
@@ -2364,6 +2367,14 @@ function RecoveryRecommendationPanel({
   const selectedExplanation = selectedRecommendation
     ? firstValue(selectedRecommendation, ["explanation", "reason", "summary"], "AI 설명을 불러오지 못했습니다.")
     : null;
+  const restoredNamespaces = useMemo(
+    () => new Set(
+      rtoHistory
+        .filter((event) => event.restoreStartedAt || event.restoreCompletedAt)
+        .map((event) => event.namespace),
+    ),
+    [rtoHistory],
+  );
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -2373,15 +2384,27 @@ function RecoveryRecommendationPanel({
             <Icon name="spark" className="h-4 w-4 text-sky-600" />
             AI Recovery Decision
           </h2>
-          <p className="text-xs font-medium text-slate-500">복구 우선순위 추천 · cloud-primary</p>
+          <p className="text-xs font-medium text-slate-500">복구 우선순위 추천 · {clusterId}</p>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="inline-flex w-fit items-center justify-center rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm transition hover:bg-slate-50"
-        >
-          새로고침
-        </button>
+        <div className="flex gap-2">
+          {visibleRecommendations.length > 0 && (
+            <button
+              type="button"
+              disabled={isApproving || selectedItems.size === 0}
+              onClick={() => onApprove(Array.from(selectedItems))}
+              className="inline-flex w-fit items-center justify-center rounded-md bg-slate-950 px-3 py-2 text-xs font-black text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              선택 승인 ({selectedItems.size})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex w-fit items-center justify-center rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm transition hover:bg-slate-50"
+          >
+            새로고침
+          </button>
+        </div>
       </div>
 
       {loading && (
@@ -2398,7 +2421,7 @@ function RecoveryRecommendationPanel({
 
       {!loading && approvalError && (
         <div className="mt-5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
-          복구 승인을 완료하지 못했습니다. 잠시 후 다시 시도하세요.
+          복구 요청을 완료하지 못했습니다. 잠시 후 다시 시도하세요.
         </div>
       )}
 
@@ -2421,6 +2444,30 @@ function RecoveryRecommendationPanel({
               <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
                 <thead className="bg-slate-50 text-xs font-black text-slate-500">
                   <tr>
+                    <th className="w-12 px-4 py-3">
+                      <input
+                        type="checkbox"
+                        className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            const unapproved = visibleRecommendations
+                              .map(r => getRecommendationWorkloadId(r))
+                              .filter(id => !approvedWorkloads[id] && !restoredNamespaces.has(id));
+                            setSelectedItems(new Set(unapproved));
+                          } else {
+                            setSelectedItems(new Set());
+                          }
+                        }}
+                        checked={
+                          visibleRecommendations.length > 0 &&
+                          visibleRecommendations.every(r => {
+                            const id = getRecommendationWorkloadId(r);
+                            return approvedWorkloads[id] || restoredNamespaces.has(id) || selectedItems.has(id);
+                          }) &&
+                          selectedItems.size > 0
+                        }
+                      />
+                    </th>
                     <th className="w-16 px-4 py-3">순위</th>
                     <th className="min-w-[180px] px-4 py-3">네임스페이스</th>
                     <th className="w-24 px-4 py-3">점수</th>
@@ -2433,14 +2480,29 @@ function RecoveryRecommendationPanel({
                   {visibleRecommendations.map((recommendation, index) => {
                     const workloadId = getRecommendationWorkloadId(recommendation);
                     const failed = failedRestoreWorkloadId === workloadId;
-                    const approved = Boolean(approvedWorkloads[workloadId] || firstValue(recommendation, ["approved"], false)) && !failed;
-                    const pending = pendingWorkloadId === workloadId;
+                    const serverApproved = Boolean(firstValue(recommendation, ["approved"], false));
+                    const approved = Boolean(approvedWorkloads[workloadId] || restoredNamespaces.has(workloadId)) && !failed;
+                    const pending = isApproving && selectedItems.has(workloadId);
                     const tier = firstValue(recommendation, ["tier", "policyTier"], "unknown");
                     const score = firstValue(recommendation, ["score", "priorityScore"], 0);
                     const explanation = firstValue(recommendation, ["explanation", "reason", "summary"], "추천 설명 없음");
 
                     return (
                       <tr key={workloadId} className={approved ? "bg-emerald-50/50" : "bg-white"}>
+                        <td className="px-4 py-4">
+                          <input
+                            type="checkbox"
+                            disabled={approved}
+                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 disabled:opacity-50"
+                            checked={selectedItems.has(workloadId)}
+                            onChange={(e) => {
+                              const next = new Set(selectedItems);
+                              if (e.target.checked) next.add(workloadId);
+                              else next.delete(workloadId);
+                              setSelectedItems(next);
+                            }}
+                          />
+                        </td>
                         <td className="px-4 py-4 text-center font-black text-slate-900">
                           {getRecommendationRank(recommendation, index)}
                         </td>
@@ -2461,6 +2523,11 @@ function RecoveryRecommendationPanel({
                                 승인됨
                               </span>
                             )}
+                            {!approved && serverApproved && (
+                              <span className="inline-flex w-max whitespace-nowrap rounded-full bg-sky-100 px-2.5 py-1 text-[11px] font-black text-sky-800 ring-1 ring-sky-200">
+                                승인됨/복구대기
+                              </span>
+                            )}
                             {failed && (
                               <span className="inline-flex w-fit items-center rounded-full bg-red-100 px-2.5 py-1 text-[11px] font-black text-red-800 ring-1 ring-red-200">
                                 실패
@@ -2468,15 +2535,15 @@ function RecoveryRecommendationPanel({
                             )}
                             <button
                               type="button"
-                              disabled={approved || pending}
-                              onClick={() => onApprove(workloadId)}
+                              disabled={approved || isApproving}
+                              onClick={() => onApprove([workloadId])}
                               className={`rounded-md px-3 py-2 text-sm font-black transition ${
                                 approved
                                   ? "cursor-not-allowed bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                                   : "bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-wait disabled:bg-slate-400"
                               }`}
                             >
-                              {approved ? "완료" : pending ? "실행 중" : failed ? "재시도" : "승인"}
+                              {approved ? "완료" : isApproving && selectedItems.has(workloadId) ? "실행 중" : failed ? "재시도" : serverApproved ? "복구 실행" : "승인"}
                             </button>
                           </div>
                         </td>
@@ -2688,7 +2755,7 @@ function Dashboard() {
     const controller = new AbortController();
 
     setRtoLoading(true);
-    loadRtoHistory("cloud-primary", { signal: controller.signal })
+    loadRtoHistory(activeCluster.id, { signal: controller.signal })
       .then((payload) => {
         setRtoHistory(getRtoHistoryEvents(payload));
         setRtoError(null);
@@ -2705,7 +2772,7 @@ function Dashboard() {
       });
 
     return () => controller.abort();
-  }, [dashboardToken, rtoReloadNonce]);
+  }, [dashboardToken, activeCluster.id, rtoReloadNonce]);
 
   useEffect(() => {
     if (!dashboardToken) {
@@ -2834,41 +2901,48 @@ function Dashboard() {
     return () => window.clearTimeout(timeoutId);
   }, [restorePhase, restoreOperation?.restoreName]);
 
-  async function handleApproveRecommendation(workloadId) {
-    const retryingFailedRestore = restoreOperation?.workloadId === workloadId && getRestorePhase(restoreOperation) === "Failed";
+  async function handleApproveRecommendation(workloadIds) {
+    const workloads = Array.isArray(workloadIds) ? workloadIds : [workloadIds];
+    const retryingFailedRestore = restoreOperation?.workloadId === workloads[0] && getRestorePhase(restoreOperation) === "Failed";
+    const pendingWorkloads = workloads.filter((id) => !approvedWorkloads[id] || retryingFailedRestore);
 
-    if (approvedWorkloads[workloadId] && !retryingFailedRestore) {
+    if (pendingWorkloads.length === 0) {
       return;
     }
 
-    const confirmed = window.confirm("이 작업은 Edge K3s에 복구를 실행합니다. 계속하시겠습니까?");
+    const targetLabel = activeCluster.isAgentCluster ? activeCluster.name : "Edge K3s";
+    const confirmed = window.confirm(`이 작업은 ${targetLabel}에 ${pendingWorkloads.length}개의 복구를 실행합니다. 계속하시겠습니까?`);
 
     if (!confirmed) {
       return;
     }
 
-    setPendingWorkloadId(workloadId);
+    setPendingWorkloadId(pendingWorkloads[0]);
     setApprovalError(null);
     setRecoveredWorkloadId(null);
 
     try {
-      await approveRecoveryRecommendation(workloadId);
-      const restoreResponse = await executeRecoveryRestore(workloadId);
+      for (const id of pendingWorkloads) {
+        await approveRecoveryRecommendation(activeCluster.id, id);
+      }
+      const targetClusterId = activeCluster.isAgentCluster ? activeCluster.id : "edge-recovery";
+      const restoreResponse = await executeRecoveryRestore(activeCluster.id, pendingWorkloads, { targetClusterId });
       const restore = firstValue(restoreResponse, ["restore"], {});
-      const restoreName = firstValue(restoreResponse, ["restore.restoreName", "requestedRestoreName"], `${workloadId}-restore`);
-      const targetClusterId = firstValue(restoreResponse, ["targetClusterId", "requestedTargetClusterId"], "edge-recovery");
+      const restoreName = firstValue(restoreResponse, ["restore.restoreName", "requestedRestoreName"], `${pendingWorkloads[0]}-restore`);
+      const resolvedTargetClusterId = firstValue(restoreResponse, ["targetClusterId", "requestedTargetClusterId"], targetClusterId);
       const acceptedAt = firstValue(restoreResponse, ["acceptedTimestamp", "restore.createdTimestamp"], new Date().toISOString());
       const phase = firstValue(restoreResponse, ["restore.status", "restore.phase"], "PendingAgent");
 
-      setApprovedWorkloads((workloads) => ({
-        ...workloads,
-        [workloadId]: true,
-      }));
-      setRestoreWorkloadId(workloadId);
+      setApprovedWorkloads((workloads) => {
+        const next = { ...workloads };
+        pendingWorkloads.forEach(id => { next[id] = true; });
+        return next;
+      });
+      setRestoreWorkloadId(pendingWorkloads[0]);
       setRestoreOperation({
-        workloadId,
+        workloadId: pendingWorkloads[0],
         restoreName,
-        targetClusterId,
+        targetClusterId: resolvedTargetClusterId,
         acceptedAt,
         startedAt: firstValue(restore, ["startTimestamp", "createdTimestamp"], acceptedAt),
         completedAt: null,
@@ -2984,7 +3058,7 @@ function Dashboard() {
               </div>
             </div>
 
-            <div className="h-[660px] w-full bg-slate-50">
+            <div className={`${topologyTab === "user-cluster" ? "h-[860px]" : "h-[660px]"} w-full bg-slate-50`}>
               {topologyTab === "architecture" ? (
               <ReactFlow
                 key={activeCluster.id}
@@ -3014,7 +3088,13 @@ function Dashboard() {
                 </Panel>
               </ReactFlow>
             ) : (
-              <UserClusterTopology apiResults={apiResults} nodeTypes={nodeTypes} edgeTypes={edgeTypes} />
+              <UserClusterTopology
+                apiResults={apiResults}
+                activeCluster={activeCluster}
+                alertEvents={alertEvents}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+              />
             )}
             </div>
           </div>
@@ -3076,11 +3156,13 @@ function Dashboard() {
 
         <RecoveryRecommendationPanel
           recommendations={recommendations}
+          clusterId={activeCluster.id}
           loading={apiLoading}
           error={recommendationError}
           approvalError={approvalError}
-          pendingWorkloadId={pendingWorkloadId}
+          isApproving={Boolean(pendingWorkloadId)}
           approvedWorkloads={approvedWorkloads}
+          rtoHistory={rtoHistory}
           failedRestoreWorkloadId={failedRestoreWorkloadId}
           restoreWorkloadId={restoreWorkloadId}
           hasActiveAlert={alertTopologyState.hasFiring}
@@ -3104,45 +3186,302 @@ function App() {
 
 export default App;
 
-function UserClusterTopology({ apiResults, nodeTypes, edgeTypes }) {
+function getNamespaceStatus(namespace, health, alertEvents) {
+  const alert = alertEvents
+    .map(normalizeAlertEvent)
+    .find((event) => event.status === "firing" && event.namespace === namespace);
+
+  if (alert) {
+    const critical = alert.severity === "critical";
+
+    return {
+      status: critical ? "outage" : "warning",
+      detail: `${alert.alertname} firing for ${namespace}`,
+      pulse: critical,
+      source: "Alertmanager",
+    };
+  }
+
+  if (toNumber(health.failedPods) > 0) {
+    return {
+      status: "outage",
+      detail: `${health.failedPods} failed pods reported`,
+      pulse: true,
+      source: "Workload health",
+    };
+  }
+
+  if (toNumber(health.pendingPods) > 0 || toNumber(health.unknownPods) > 0) {
+    return {
+      status: "warning",
+      detail: `${toNumber(health.pendingPods) + toNumber(health.unknownPods)} pods need attention`,
+      pulse: false,
+      source: "Workload health",
+    };
+  }
+
+  if (firstValue(health, ["perNamespaceMetricsUnavailable"], false)) {
+    return {
+      status: "safe",
+      detail: "Namespace discovered; per-namespace pod metrics pending",
+      pulse: false,
+      source: "Live agent",
+    };
+  }
+
+  return {
+    status: "safe",
+    detail: "Namespace connection and workload signal are normal",
+    pulse: false,
+    source: "Live agent",
+  };
+}
+
+function getClusterMapStatus(activeCluster, alertEvents) {
+  const clusterAlert = alertEvents
+    .map(normalizeAlertEvent)
+    .find((event) => event.status === "firing" && !event.namespace && event.clusterId === activeCluster.id);
+
+  if (clusterAlert) {
+    const critical = clusterAlert.severity === "critical";
+
+    return {
+      status: critical ? "outage" : "warning",
+      detail: `${clusterAlert.alertname} firing for ${activeCluster.id}`,
+      pulse: critical,
+    };
+  }
+
+  if (activeCluster.status === "Incident") {
+    return {
+      status: "outage",
+      detail: "Cluster health is reporting an active incident",
+      pulse: true,
+    };
+  }
+
+  if (activeCluster.status === "Warning") {
+    return {
+      status: "warning",
+      detail: "Agent connected, but workloads or heartbeat need attention",
+      pulse: false,
+    };
+  }
+
+  return {
+    status: "safe",
+    detail: "Agent connection is healthy",
+    pulse: false,
+  };
+}
+
+function buildNamespaceHealthRows(apiResults, alertEvents = []) {
+  const workloads = getApiResult(apiResults, "cloudWorkloads");
+  const healthRows = asArray(workloads, ["summary.namespaceHealth"]);
+  const totalPods = toNumber(firstValue(workloads, ["summary.totalPods"], 0));
+  const healthRowsHavePodCounts = healthRows.some((row) => toNumber(firstValue(row, ["totalPods"], 0)) > 0);
+  const normalizeRows = (rows) => rows.map((row) => (
+    totalPods > 0 && !healthRowsHavePodCounts
+      ? {
+        ...row,
+        totalPods: null,
+        runningPods: null,
+        pendingPods: null,
+        failedPods: null,
+        succeededPods: null,
+        unknownPods: null,
+        perNamespaceMetricsUnavailable: true,
+      }
+      : row
+  ));
+  const alertNamespaces = alertEvents
+    .map(normalizeAlertEvent)
+    .filter((event) => event.namespace && event.status === "firing")
+    .map((event) => event.namespace);
+  const appendMissingAlertNamespaces = (rows) => {
+    const seen = new Set(rows.map((row) => row.namespace));
+    const missing = [...new Set(alertNamespaces)]
+      .filter((namespace) => !seen.has(namespace))
+      .map((namespace) => ({
+        namespace,
+        totalPods: null,
+        runningPods: null,
+        pendingPods: null,
+        failedPods: null,
+        succeededPods: null,
+        unknownPods: null,
+        signalOnly: true,
+      }));
+
+    return [...missing, ...rows];
+  };
+
+  if (healthRows.length) {
+    return appendMissingAlertNamespaces(normalizeRows(healthRows));
+  }
+
+  return appendMissingAlertNamespaces(asArray(workloads, ["summary.namespaces"]).map((item) => ({
+    namespace: firstValue(item, ["namespace"], "default"),
+    totalPods: firstValue(item, ["podCount"], 0),
+    runningPods: null,
+    pendingPods: null,
+    failedPods: null,
+    succeededPods: null,
+    unknownPods: null,
+  })));
+}
+
+function formatNamespaceMetric(value) {
+  return value === null || value === undefined ? "-" : String(value);
+}
+
+function getNamespaceStatusWeight(status) {
+  if (status === "outage") return 3;
+  if (status === "warning") return 2;
+  if (status === "recovered") return 1;
+  return 0;
+}
+
+function getNamespaceSummary(records) {
+  const outageCount = records.filter((record) => record.status.status === "outage").length;
+  const warningCount = records.filter((record) => record.status.status === "warning").length;
+  const worstStatus = outageCount ? "outage" : warningCount ? "warning" : "safe";
+
+  return {
+    status: worstStatus,
+    detail: outageCount
+      ? `${outageCount} namespace incidents hidden`
+      : warningCount
+        ? `${warningCount} namespace warnings hidden`
+        : `${records.length} namespaces collapsed`,
+    metrics: [
+      ["Total", String(records.length)],
+      ["Outage", String(outageCount)],
+      ["Warning", String(warningCount)],
+    ],
+  };
+}
+
+function UserClusterTopology({ apiResults, activeCluster, alertEvents, nodeTypes, edgeTypes }) {
   const topology = getApiResult(apiResults, "cloudTopology");
+  const [showNamespaces, setShowNamespaces] = useState(false);
+  const namespaceHealthRows = useMemo(() => buildNamespaceHealthRows(apiResults, alertEvents), [apiResults, alertEvents]);
+  const namespaceRecords = useMemo(
+    () => namespaceHealthRows
+      .map((health, index) => {
+        const namespace = firstValue(health, ["namespace"], `namespace-${index + 1}`);
+        const status = getNamespaceStatus(namespace, health, alertEvents);
+
+        return { health, namespace, status };
+      })
+      .sort((left, right) => (
+        getNamespaceStatusWeight(right.status.status) - getNamespaceStatusWeight(left.status.status) ||
+        left.namespace.localeCompare(right.namespace)
+      )),
+    [namespaceHealthRows, alertEvents],
+  );
   
   const nodes = useMemo(() => {
-    if (!topology || !topology.nodes) return [];
-    return topology.nodes.map((n, i) => ({
-      id: n.id,
+    if (!activeCluster) return [];
+
+    const topologyNodes = asArray(topology, ["nodes"]);
+    const clusterTopologyNode =
+      topologyNodes.find((node) => node.id === activeCluster.id) ??
+      topologyNodes.find((node) => node.selected) ??
+      topologyNodes[0];
+    const clusterStatus = getClusterMapStatus(activeCluster, alertEvents);
+    const clusterNode = {
+      id: activeCluster.id,
       type: "drNode",
-      position: { x: 100 + (i * 400), y: 200 },
+      position: { x: showNamespaces ? 380 : 260, y: showNamespaces ? 30 : 160 },
       data: {
-        icon: n.type === "cloud-k8s" ? "cloud" : "edge",
-        label: n.label || n.id,
-        subtitle: n.type,
-        status: "safe",
-        detail: "Live agent connection",
+        icon: firstValue(clusterTopologyNode, ["type"], activeCluster.isAgentCluster ? "user-k8s" : "cloud-k8s") === "edge-k3s" ? "edge" : "cloud",
+        label: firstValue(clusterTopologyNode, ["label"], activeCluster.name),
+        subtitle: firstValue(clusterTopologyNode, ["type"], activeCluster.isAgentCluster ? "user-k8s" : "cluster"),
+        status: clusterStatus.status,
+        detail: clusterStatus.detail,
+        pulse: clusterStatus.pulse,
         metrics: [
-          ["IP", n.nodeIp || "N/A"],
-          ["Node", n.nodeName || "N/A"],
+          ["IP", firstValue(clusterTopologyNode, ["nodeIp"], activeCluster.region || "N/A")],
+          ["Node", firstValue(clusterTopologyNode, ["nodeName"], "N/A")],
+          ["Namespaces", String(namespaceHealthRows.length)],
         ],
-      }
-    }));
-  }, [topology]);
+      },
+    };
+
+    if (!showNamespaces) {
+      const summary = getNamespaceSummary(namespaceRecords);
+
+      return [clusterNode, {
+        id: "namespace-summary",
+        type: "drNode",
+        position: { x: 620, y: 160 },
+        data: {
+          icon: "database",
+          label: "Namespaces",
+          subtitle: "Collapsed namespace map",
+          status: summary.status,
+          detail: summary.detail,
+          pulse: summary.status === "outage",
+          metrics: summary.metrics,
+        },
+      }];
+    }
+
+    const namespaceNodes = namespaceRecords.slice(0, 15).map((record, index) => {
+      const { health, namespace, status } = record;
+      const columns = 2;
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+
+      return {
+        id: `namespace-${namespace}`,
+        type: "drNode",
+        position: { x: 160 + (column * 440), y: 330 + (row * 340) },
+        data: {
+          icon: "database",
+          label: namespace,
+          subtitle: "Namespace",
+          status: status.status,
+          detail: status.detail,
+          pulse: status.pulse,
+          metrics: [
+            ["Pods", firstValue(health, ["signalOnly"], false) ? "No pod metric" : formatNamespaceMetric(firstValue(health, ["totalPods"], null))],
+            ["Running", formatNamespaceMetric(firstValue(health, ["runningPods"], null))],
+            ["Failed", formatNamespaceMetric(firstValue(health, ["failedPods"], null))],
+            ["Source", status.source],
+          ],
+        },
+      };
+    });
+
+    return [clusterNode, ...namespaceNodes];
+  }, [activeCluster, topology, namespaceHealthRows.length, namespaceRecords, alertEvents, showNamespaces]);
 
   const edges = useMemo(() => {
-    if (!topology || !topology.edges) return [];
-    return topology.edges.map((e, i) => ({
-      id: `edge-${i}`,
-      source: e.source,
-      target: e.target,
-      type: "labeled",
-      animated: true,
-      label: e.relationship,
-      markerEnd: { type: MarkerType.ArrowClosed, color: "#64748b" },
-      style: { stroke: "#64748b", strokeWidth: 2 },
-      data: { labelOffset: { x: 0, y: -20 }, labelTone: "neutral" },
-    }));
-  }, [topology]);
+    if (!activeCluster) return [];
 
-  if (!topology || !topology.nodes) {
+    return nodes
+      .filter((node) => node.id === "namespace-summary" || node.id.startsWith("namespace-"))
+      .map((node) => {
+        const alerting = ["outage", "warning"].includes(node.data.status);
+        const stroke = node.data.status === "outage" ? "#ef4444" : node.data.status === "warning" ? "#f59e0b" : "#10b981";
+
+        return {
+          id: `${activeCluster.id}-${node.id}`,
+          source: activeCluster.id,
+          target: node.id,
+      type: "labeled",
+          animated: alerting,
+          label: node.id === "namespace-summary" ? "namespace-map" : alerting ? "incident-scope" : "namespace",
+          markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+          style: { stroke, strokeWidth: alerting ? 2.8 : 1.8 },
+          data: { labelOffset: { x: 0, y: -18 }, labelTone: alerting ? "warning" : "neutral" },
+        };
+      });
+  }, [activeCluster, nodes]);
+
+  if (!activeCluster || nodes.length === 0) {
     return <div className="flex h-full items-center justify-center text-sm font-medium text-slate-500">No live topology data available</div>;
   }
 
@@ -3153,12 +3492,23 @@ function UserClusterTopology({ apiResults, nodeTypes, edgeTypes }) {
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       fitView
-      fitViewOptions={{ padding: 0.3 }}
+      fitViewOptions={{ padding: 0.18, minZoom: 0.45, maxZoom: 0.95 }}
+      minZoom={0.35}
+      maxZoom={1.35}
       nodesDraggable={false}
       nodesConnectable={false}
     >
       <Background color="#94a3b8" gap={18} size={1.25} variant="dots" />
       <Controls showInteractive={false} />
+      <Panel position="top-right" className="rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-sm backdrop-blur">
+        <button
+          type="button"
+          onClick={() => setShowNamespaces((value) => !value)}
+          className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm transition hover:bg-slate-50"
+        >
+          {showNamespaces ? "네임스페이스 접기" : `네임스페이스 펼치기 (${namespaceRecords.length})`}
+        </button>
+      </Panel>
     </ReactFlow>
   );
 }

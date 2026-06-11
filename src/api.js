@@ -218,24 +218,26 @@ export async function loadLatestEvent({ signal } = {}) {
 }
 
 export async function loadRtoHistory(clusterId = "cloud-primary", { signal } = {}) {
-  return getJson(`/api/clusters/${encodeURIComponent(clusterId)}/rto-history`, { signal, auth: false });
+  return getJson(`/api/clusters/${encodeURIComponent(clusterId)}/rto-history`, { signal });
 }
 
-export async function approveRecoveryRecommendation(workloadId, { signal } = {}) {
-  return postJson(`/api/clusters/cloud-primary/recommendations/${encodeURIComponent(workloadId)}/approve`, { signal });
+export async function approveRecoveryRecommendation(clusterId, workloadId, { signal } = {}) {
+  return postJson(`/api/clusters/${encodeURIComponent(clusterId)}/recommendations/${encodeURIComponent(workloadId)}/approve`, { signal });
 }
 
-export async function executeRecoveryRestore(workloadId, { signal } = {}) {
-  const safeWorkloadId = toKubernetesName(workloadId);
-  const restoreName = `${safeWorkloadId}-restore-${Date.now().toString(36)}`.slice(0, 63).replace(/-+$/, "");
-  const targetClusterId = "edge-recovery";
+export async function executeRecoveryRestore(clusterId, workloads, { signal, targetClusterId } = {}) {
+  const workloadArray = Array.isArray(workloads) ? workloads : [workloads];
+  const safeWorkloads = workloadArray.map(toKubernetesName);
+  const primaryWorkload = safeWorkloads[0] || "bulk";
+  const restoreName = `${primaryWorkload}-restore-${Date.now().toString(36)}`.slice(0, 63).replace(/-+$/, "");
+  const requestedTargetClusterId = targetClusterId || "edge-recovery";
 
-  const payload = await postJson("/api/clusters/cloud-primary/restores", {
+  const payload = await postJson(`/api/clusters/${encodeURIComponent(clusterId)}/restores`, {
     body: {
       restoreName,
       backupName: "latest",
-      targetClusterId,
-      namespaces: [safeWorkloadId],
+      targetClusterId: requestedTargetClusterId,
+      namespaces: safeWorkloads,
       confirm: true,
     },
     signal,
@@ -244,7 +246,7 @@ export async function executeRecoveryRestore(workloadId, { signal } = {}) {
   return {
     ...payload,
     requestedRestoreName: restoreName,
-    requestedTargetClusterId: targetClusterId,
+    requestedTargetClusterId,
   };
 }
 

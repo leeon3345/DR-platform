@@ -38,11 +38,14 @@ velero install \\
     title: "dr-agent 설치 (Helm)",
     description: "Helm으로 dr-agent를 설치하여 클러스터 상태를 자동으로 전송합니다.",
     code: `helm repo add dr-platform ${PLATFORM_URL}/api/download
-helm install dr-agent dr-platform/dr-agent \\
+helm repo update dr-platform
+helm upgrade --install dr-agent dr-platform/dr-agent \\
+  --version 0.1.13 \\
   --set agent.platformUrl=${PLATFORM_URL} \\
   --set agent.clusterId=my-cluster \\
-  --set agent.token=my-platform-token`,
-    note: "토큰은 Step 1에서 발급받은 값을 사용합니다. 새로운 클러스터를 추가하려면 drctl init을 다시 실행할 필요 없이 기존 토큰과 새로운 clusterId를 넣어 Helm 설치만 하면 여러 클러스터를 통합 관리할 수 있습니다.",
+  --set agent.token=my-platform-token \\
+  --set image.pullPolicy=Always`,
+    note: "토큰은 Step 1에서 발급받은 값을 사용합니다. 기존 설치를 갱신할 때도 같은 명령을 사용하세요. 새로운 클러스터를 추가하려면 기존 토큰과 새로운 clusterId를 넣어 Helm 설치만 하면 여러 클러스터를 통합 관리할 수 있습니다.",
     accent: "violet",
   },
   {

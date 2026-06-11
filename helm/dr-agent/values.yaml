@@ -1,13 +1,15 @@
 image:
   repository: ttl.sh/dr-platform-agent
   tag: 24h
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 agent:
   platformUrl: ""
   clusterId: user-k8s
   token: ""
   pollInterval: 30000
+  restorePollInterval: 5000
+  restorePollAttempts: 36
 
 serviceAccount:
   create: true

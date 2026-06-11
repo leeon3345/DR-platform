@@ -86,6 +86,17 @@ Open the dashboard zrok URL in a browser. If `drctl init` printed a tokenized da
 
 Install `dr-agent` on the user cluster with the issued dashboard token and the API zrok URL as the platform endpoint. Keep Kubernetes credentials, Velero credentials, MinIO credentials, and platform tokens out of Git-tracked files.
 
+```bash
+helm repo add dr-platform <api-zrok-url>/api/download
+helm repo update dr-platform
+helm upgrade --install dr-agent dr-platform/dr-agent \
+  --version 0.1.13 \
+  --set agent.platformUrl=<api-zrok-url> \
+  --set agent.clusterId=my-cluster \
+  --set agent.token=<dashboard-token> \
+  --set image.pullPolicy=Always
+```
+
 ## Notes
 
 - `docker-compose.yml` does not contain plaintext secrets.

@@ -107,8 +107,8 @@ export function toRuntimeCluster(profile) {
         veleroLocation: null,
         backups: profile.capabilities.backupHistory ? 'agent' : null,
         backupCreate: null,
-        backupStatus: null,
-        restorePreview: null,
+        backupStatus: profile.capabilities.backupStatus ? 'agent' : null,
+        restorePreview: profile.capabilities.restorePreview ? 'agent' : null,
         restoreExecute: profile.capabilities.restoreExecute ? 'agent' : null,
         restoreStatus: profile.capabilities.restoreStatus ? 'agent' : null,
         workloads: profile.capabilities.workloads ? 'agent' : null,
@@ -351,8 +351,8 @@ function normalizeCapabilities(kind, capabilities) {
       velero: true,
       backupHistory: true,
       backupCreate: false,
-      backupStatus: false,
-      restorePreview: false,
+      backupStatus: true,
+      restorePreview: true,
       restoreExecute: true,
       restoreStatus: true,
       workloads: true,
@@ -467,6 +467,7 @@ function normalizeAgentReportedState(state) {
     ? state.workloads
     : {};
   const namespaceValues = Array.isArray(workloads.namespaces) ? workloads.namespaces : [];
+  const namespaceHealthValues = Array.isArray(workloads.namespaceHealth) ? workloads.namespaceHealth : [];
   const backups = Array.isArray(state.backups) ? state.backups.slice(0, 100).map((backup) => ({
     name: normalizeOptionalString(backup?.name, ''),
     phase: normalizeOptionalString(backup?.phase, 'Unknown'),
@@ -480,6 +481,15 @@ function normalizeAgentReportedState(state) {
       pendingPods: normalizeNonNegativeInteger(workloads.pendingPods),
       failedPods: normalizeNonNegativeInteger(workloads.failedPods),
       namespaces: namespaceValues.map((namespace) => normalizeOptionalString(namespace, '')).filter(Boolean).slice(0, 100),
+      namespaceHealth: namespaceHealthValues.slice(0, 100).map((health) => ({
+        namespace: normalizeOptionalString(health?.namespace, ''),
+        totalPods: normalizeNonNegativeInteger(health?.totalPods),
+        runningPods: normalizeNonNegativeInteger(health?.runningPods),
+        pendingPods: normalizeNonNegativeInteger(health?.pendingPods),
+        failedPods: normalizeNonNegativeInteger(health?.failedPods),
+        succeededPods: normalizeNonNegativeInteger(health?.succeededPods),
+        unknownPods: normalizeNonNegativeInteger(health?.unknownPods),
+      })).filter((health) => health.namespace),
     },
     backups,
   };

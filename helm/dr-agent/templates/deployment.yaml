@@ -32,6 +32,10 @@ spec:
               value: {{ required "agent.clusterId is required" .Values.agent.clusterId | quote }}
             - name: POLL_INTERVAL
               value: {{ .Values.agent.pollInterval | quote }}
+            - name: RESTORE_POLL_INTERVAL
+              value: {{ .Values.agent.restorePollInterval | quote }}
+            - name: RESTORE_POLL_ATTEMPTS
+              value: {{ .Values.agent.restorePollAttempts | quote }}
             - name: CLUSTER_TOKEN
               valueFrom:
                 secretKeyRef:
