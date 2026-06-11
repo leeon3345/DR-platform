@@ -124,7 +124,8 @@
             "kube-flannel",
             "kube-system",
             "velero"
-          ]
+          ],
+          "namespaceHealth": []
         },
         "backups": [
           {
@@ -166,8 +167,8 @@
       "velero": true,
       "backupHistory": true,
       "backupCreate": false,
-      "backupStatus": false,
-      "restorePreview": false,
+      "backupStatus": true,
+      "restorePreview": true,
       "restoreExecute": true,
       "restoreStatus": true,
       "workloads": true,
@@ -181,8 +182,8 @@
     "agent": {
       "agentAuthHash": "sha256:4fee89d23eea3ee5e736b33dc58331c64e14fcc14ad30758259a224e16bdc8fb",
       "registeredAt": "2026-06-10T15:36:31.539Z",
-      "lastHeartbeatAt": "2026-06-10T16:28:08.536Z",
-      "lastCollectedAt": "2026-06-10T16:28:06.612Z",
+      "lastHeartbeatAt": "2026-06-11T08:58:42.899Z",
+      "lastCollectedAt": "2026-06-11T08:58:39.782Z",
       "state": {
         "nodes": [
           {
@@ -207,11 +208,10 @@
           }
         ],
         "workloads": {
-          "runningPods": 59,
+          "runningPods": 57,
           "pendingPods": 5,
           "failedPods": 10,
           "namespaces": [
-            "analytics",
             "auth-service",
             "calico-apiserver",
             "calico-system",
@@ -222,13 +222,23 @@
             "kube-system",
             "local-path-storage",
             "monitoring",
-            "order-service",
             "runtime-demo",
             "tigera-operator",
             "velero"
-          ]
+          ],
+          "namespaceHealth": []
         },
         "backups": [
+          {
+            "name": "pre-chaos-1",
+            "phase": "Failed",
+            "timestamp": "2026-06-10T16:31:46.000Z"
+          },
+          {
+            "name": "pre-chaos-1781091552",
+            "phase": "Completed",
+            "timestamp": "2026-06-10T11:39:13.000Z"
+          },
           {
             "name": "user-k8s-smoke-001",
             "phase": "Completed",
@@ -241,7 +251,56 @@
           }
         ]
       },
-      "restoreStatuses": {}
+      "restoreStatuses": {
+        "restore-1781164762964-16ca25": {
+          "operationId": "restore-1781164762964-16ca25",
+          "restoreName": "order-service-restore-mq97ierm",
+          "backupName": "user-k8s-smoke-001",
+          "phase": "Failed",
+          "message": "Velero restore 'order-service-restore-mq97ierm' not found - restore was not created or was removed",
+          "updatedAt": "2026-06-11T07:59:41.989Z"
+        },
+        "restore-1781165604418-79800c": {
+          "operationId": "restore-1781165604418-79800c",
+          "restoreName": "auth-service-restore-mq980g19",
+          "backupName": "user-k8s-smoke-001",
+          "phase": "Failed",
+          "message": "Velero restore Failed",
+          "updatedAt": "2026-06-11T08:13:53.232Z"
+        },
+        "restore-1781166201633-cfed33": {
+          "operationId": "restore-1781166201633-cfed33",
+          "restoreName": "calico-apiserver-restore-mq98d8zx",
+          "backupName": "user-k8s-smoke-001",
+          "phase": "Failed",
+          "message": "Velero restore Failed",
+          "updatedAt": "2026-06-11T08:23:51.491Z"
+        },
+        "restore-1781166275053-4b7cbb": {
+          "operationId": "restore-1781166275053-4b7cbb",
+          "restoreName": "calico-system-restore-mq98etna",
+          "backupName": "user-k8s-smoke-001",
+          "phase": "Failed",
+          "message": "Velero restore Failed",
+          "updatedAt": "2026-06-11T08:26:01.246Z"
+        },
+        "restore-1781166511067-e610dc": {
+          "operationId": "restore-1781166511067-e610dc",
+          "restoreName": "calico-system-restore-mq98jvr9",
+          "backupName": "user-k8s-smoke-001",
+          "phase": "Failed",
+          "message": "Velero restore Failed",
+          "updatedAt": "2026-06-11T08:29:02.882Z"
+        },
+        "restore-1781167083279-6f38b7": {
+          "operationId": "restore-1781167083279-6f38b7",
+          "restoreName": "compliance-system-restore-mq98w5a5",
+          "backupName": "user-k8s-smoke-001",
+          "phase": "Completed",
+          "message": "Velero restore Completed",
+          "updatedAt": "2026-06-11T08:38:16.667Z"
+        }
+      }
     }
   }
 ]

@@ -825,10 +825,20 @@ async function getRecoveryRecommendations({ params }) {
     backups: history.backups,
   });
   const generatedAt = new Date().toISOString();
-  const recommendations = await Promise.all(scored.map(async (recommendation) => ({
-      ...recommendation,
-      explanation: await generateRecommendationExplanation(recommendation),
-    })));
+  const recommendations = [];
+
+  for (const recommendation of scored) {
+    const useAi = recommendation.rank <= 3;
+    const explanation = useAi
+      ? await generateRecommendationExplanation(recommendation)
+      : buildFallbackRecommendationExplanation(recommendation);
+
+    recommendations.push({ ...recommendation, explanation });
+
+    if (useAi && scored.indexOf(recommendation) < scored.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
 
   await recordRecommendationGenerated(cluster.id, recommendations, generatedAt);
 
@@ -2416,6 +2426,78 @@ function summarizeNamespaceHealth(health) {
   return parts.join(', ');
 }
 
+function isGeminiApiKey(apiKey) {
+  return apiKey.startsWith('AIzaSy');
+}
+
+async function callGeminiApi(apiKey, model, prompt, maxTokens) {
+  const geminiModel = model || 'gemini-2.0-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            {
+              text: 'You write concise disaster recovery advice for Kubernetes operators.\n\n' + prompt,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: maxTokens,
+      },
+    }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Gemini API HTTP ${response.status}: ${errorText.slice(0, 200)}`);
+  }
+
+  const payload = await response.json();
+  console.log(`[LLM] Gemini payload:`, JSON.stringify(payload));
+  return payload?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function callOpenAiApi(apiKey, model, prompt, maxTokens) {
+  const response = await fetch(process.env.LLM_API_URL || 'https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: model || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You write concise disaster recovery advice for Kubernetes operators.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: maxTokens,
+    }),
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI API HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  return payload?.choices?.[0]?.message?.content || '';
+}
+
 async function generateRecommendationExplanation(recommendation) {
   const fallback = buildFallbackRecommendationExplanation(recommendation);
   const apiKey = process.env.LLM_API_KEY?.trim();
@@ -2425,39 +2507,22 @@ async function generateRecommendationExplanation(recommendation) {
   }
 
   try {
-    const response = await fetch(process.env.LLM_API_URL || 'https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: process.env.LLM_MODEL || 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: 'You write concise disaster recovery advice for Kubernetes operators.',
-          },
-          {
-            role: 'user',
-            content: buildRecommendationPrompt(recommendation),
-          },
-        ],
-        temperature: 0.2,
-        max_tokens: getLlmMaxTokens(),
-      }),
-      signal: AbortSignal.timeout(8000),
-    });
+    const prompt = buildRecommendationPrompt(recommendation);
+    const maxTokens = getLlmMaxTokens();
+    const model = process.env.LLM_MODEL?.trim() || '';
 
-    if (!response.ok) {
-      return fallback;
+    let text;
+
+    if (isGeminiApiKey(apiKey)) {
+      const geminiModel = model && !model.startsWith('gpt') ? model : 'gemini-2.0-flash';
+      text = await callGeminiApi(apiKey, geminiModel, prompt, maxTokens);
+    } else {
+      text = await callOpenAiApi(apiKey, model, prompt, maxTokens);
     }
 
-    const payload = await response.json();
-    const text = payload?.choices?.[0]?.message?.content;
-
     return sanitizeExplanation(text) || fallback;
-  } catch {
+  } catch (error) {
+    console.error(`[LLM] recommendation explanation failed: ${error.message}`);
     return fallback;
   }
 }

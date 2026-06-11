@@ -165,7 +165,7 @@ async function collectWorkloads() {
 
 async function collectBackups() {
   try {
-    const backupList = await runJson('velero', ['backup', 'get', '-o', 'json']);
+    const backupList = await runJson('velero', ['backup', 'get', '--namespace', 'velero', '-o', 'json']);
 
     return (backupList.items || []).map((backup) => ({
       name: normalizeName(backup.metadata?.name || 'unknown-backup', 'backup.name'),
@@ -207,7 +207,7 @@ async function handleCommand(command) {
 }
 
 async function executeRestoreCommand({ restoreName, backupName, namespaces, labels }) {
-  const args = ['restore', 'create', restoreName, '--from-backup', backupName];
+  const args = ['restore', 'create', restoreName, '--from-backup', backupName, '--namespace', 'velero'];
   const safeNamespaces = normalizeNamespaces(namespaces);
   const selector = normalizeSelector(labels);
 
@@ -219,17 +219,23 @@ async function executeRestoreCommand({ restoreName, backupName, namespaces, labe
     args.push('--selector', selector);
   }
 
-  args.push('-o', 'json');
-
-  return runJson('velero', args);
+  await execFileAsync('velero', args, {
+    timeout: 30000,
+    maxBuffer: 1024 * 1024 * 5,
+  });
+  
+  return { status: { phase: 'Submitted' } };
 }
 
 async function pollRestoreStatus({ operationId, restoreName, backupName }) {
+  let notFoundCount = 0;
+
   for (let attempt = 0; attempt < restorePollAttempts; attempt += 1) {
     await delay(restorePollInterval);
 
     try {
-      const restore = await runJson('velero', ['restore', 'get', restoreName, '-o', 'json']);
+      const restore = await runJson('velero', ['restore', 'get', restoreName, '--namespace', 'velero', '-o', 'json']);
+      notFoundCount = 0;
       const phase = restore.status?.phase || 'Submitted';
       const message = isTerminalRestorePhase(phase)
         ? `Velero restore ${phase}`
@@ -242,6 +248,23 @@ async function pollRestoreStatus({ operationId, restoreName, backupName }) {
       }
     } catch (error) {
       logError(`restore ${restoreName} status poll failed`, error);
+      const errorMessage = String(error.message || '');
+
+      if (errorMessage.includes('not found') || errorMessage.includes('NotFound')) {
+        notFoundCount += 1;
+
+        if (notFoundCount >= 3) {
+          log(`restore ${restoreName} not found after ${notFoundCount} attempts, marking as Failed`);
+          await reportStatus({
+            operationId,
+            restoreName,
+            backupName,
+            phase: 'Failed',
+            message: `Velero restore '${restoreName}' not found - restore was not created or was removed`,
+          });
+          return;
+        }
+      }
     }
   }
 
@@ -249,8 +272,8 @@ async function pollRestoreStatus({ operationId, restoreName, backupName }) {
     operationId,
     restoreName,
     backupName,
-    phase: 'Submitted',
-    message: 'Velero restore submitted; completion not observed before agent poll timeout',
+    phase: 'Failed',
+    message: 'Velero restore failed: completion not observed before agent poll timeout',
   });
 }
 
@@ -272,7 +295,24 @@ async function runJson(command, args) {
     maxBuffer: 1024 * 1024 * 5,
   });
 
-  return JSON.parse(stdout);
+  let text = stdout.trim();
+  const jsonStart = text.indexOf('{');
+  const arrayStart = text.indexOf('[');
+  
+  let startIndex = -1;
+  if (jsonStart !== -1 && arrayStart !== -1) {
+    startIndex = Math.min(jsonStart, arrayStart);
+  } else if (jsonStart !== -1) {
+    startIndex = jsonStart;
+  } else if (arrayStart !== -1) {
+    startIndex = arrayStart;
+  }
+  
+  if (startIndex > 0) {
+    text = text.slice(startIndex);
+  }
+
+  return JSON.parse(text);
 }
 
 async function getJson(path) {
