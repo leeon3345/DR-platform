@@ -10,7 +10,8 @@ dist
 
 # Codex local context
 .codexignore
-.context/handoff.md
+.context/
+.codex_report_ref/
 server/registry/recovery-policy.json
 server/registry/tokens.json
 server/registry/rto-history.json
