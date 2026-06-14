@@ -1,19 +1,19 @@
 services:
   dr-api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile.api
     ports:
       - "3001:3001"
     env_file:
-      - .env.api
+      - ../.env.api
     volumes:
-      - ./server/registry:/app/server/registry
+      - ../server/registry:/app/server/registry
 
   dr-dashboard:
     build:
-      context: .
-      dockerfile: Dockerfile.dashboard
+      context: ..
+      dockerfile: deploy/Dockerfile.dashboard
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
         VITE_API_URL: ${VITE_API_URL:-}
