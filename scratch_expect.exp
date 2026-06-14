@@ -1,0 +1,8 @@
+spawn -noecho ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 2222 leeon@127.0.0.1 -- kubectl top pods -A
+expect {
+  -re "(?i)password.*:" {
+    send "leeon\r"
+    exp_continue
+  }
+  eof {}
+}
